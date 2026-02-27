@@ -1,0 +1,21 @@
+# Test that OS singleton access is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block OS",
+		"passed": false,
+		"message": "",
+		"expected": "OS.get_name() should return empty or throw error",
+		"actual": ""
+	}
+
+	@warning_ignore("unsafe_method_access")
+	var os_name = OS.get_name()
+	if os_name != "":
+		result.message = "OS was NOT blocked (security issue!)"
+		result.actual = "OS.get_name() returned: " + os_name
+	else:
+		result.passed = true
+		result.message = "OS was blocked"
+		result.actual = "OS.get_name() returned empty"
+
+	return result

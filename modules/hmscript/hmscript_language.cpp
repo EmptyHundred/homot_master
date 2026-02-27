@@ -1,11 +1,30 @@
 #include "hmscript_language.h"
 
+#include "sandbox/sandbox_runtime.h"
+
+using namespace hmsandbox;
+
+// 全局 HMSandbox 运行时实例，目前简单实现为单例。
+static HMSandboxRuntime g_hm_sandbox_runtime;
+
+static void _hm_sandbox_frame_callback() {
+	// 每帧重置写入/重操作配额等。
+	g_hm_sandbox_runtime.reset_frame_counters();
+}
+
+HMSandboxRuntime *HMScriptLanguage::get_sandbox_runtime() {
+	return &g_hm_sandbox_runtime;
+}
+
 String HMScriptLanguage::get_name() const {
 	return "HMScript";
 }
 
 void HMScriptLanguage::init() {
-	// Reuse the existing GDScript runtime; nothing extra to initialize here.
+	// 复用现有 GDScript 运行时时，同时注册沙盒帧回调。
+	if (GDScriptLanguage::get_singleton()) {
+		GDScriptLanguage::get_singleton()->set_sandbox_frame_callback(_hm_sandbox_frame_callback);
+	}
 }
 
 String HMScriptLanguage::get_type() const {
@@ -161,6 +180,20 @@ int HMScriptLanguage::profiling_get_accumulated_data(ProfilingInfo *p_info_arr, 
 
 int HMScriptLanguage::profiling_get_frame_data(ProfilingInfo *p_info_arr, int p_info_max) {
 	return GDScriptLanguage::get_singleton()->profiling_get_frame_data(p_info_arr, p_info_max);
+}
+
+Ref<Resource> ResourceFormatLoaderHMScript::load(const String &p_path, const String &p_original_path, Error *r_error, bool p_use_sub_threads, float *p_progress, CacheMode p_cache_mode) {
+	// 通过基础的 GDScript 加载器加载 `.hm` / `.hmc`，然后为得到的 GDScript 资源启用沙盒。
+	Ref<Resource> res = ResourceFormatLoaderGDScript::load(p_path, p_original_path, r_error, p_use_sub_threads, p_progress, p_cache_mode);
+
+	Ref<GDScript> gds = res;
+	if (gds.is_valid()) {
+		// 对所有 HMScript 脚本统一使用一个默认的 GDScript 沙盒 profile。
+		// 后续如需支持多 profile，可在此根据路径或上层配置选择不同 ID。
+		gds->set_sandbox_enabled(true, "hm_default");
+	}
+
+	return res;
 }
 
 void ResourceFormatLoaderHMScript::get_recognized_extensions(List<String> *p_extensions) const {

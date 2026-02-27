@@ -1,0 +1,21 @@
+# Test that FileAccess class is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block FileAccess",
+		"passed": false,
+		"message": "",
+		"expected": "FileAccess.open() should return null or throw error",
+		"actual": ""
+	}
+
+	var file = FileAccess.open("res://test.txt", FileAccess.READ)
+	if file != null:
+		file.close()
+		result.message = "FileAccess was NOT blocked (security issue!)"
+		result.actual = "FileAccess.open() succeeded"
+	else:
+		result.passed = true
+		result.message = "FileAccess was blocked"
+		result.actual = "FileAccess.open() returned null"
+
+	return result

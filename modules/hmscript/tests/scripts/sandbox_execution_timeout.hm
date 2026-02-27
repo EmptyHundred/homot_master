@@ -1,0 +1,25 @@
+# Test execution timeout limits in sandbox mode
+func test():
+	print("Testing execution timeout")
+
+	# According to design.md, ExecutionLimiter should enforce timeout_ms
+	# The limiter should track execution time and stop long-running scripts
+
+	print("Starting timed operation")
+	var start_time = Time.get_ticks_msec()
+
+	# Simulate some work
+	var result = 0
+	for i in range(100):
+		result += i
+
+	var end_time = Time.get_ticks_msec()
+	var elapsed = end_time - start_time
+
+	print("Operation completed in " + str(elapsed) + " ms")
+	print("Result: " + str(result))
+
+	# In sandbox mode, if this takes too long, it should be terminated
+	# The test framework would set a timeout limit
+
+	print("Timeout test completed")

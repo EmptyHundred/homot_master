@@ -1,0 +1,22 @@
+# Test that Object.call() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block Object.call()",
+		"passed": false,
+		"message": "",
+		"expected": "Object.call() should return null or throw error",
+		"actual": ""
+	}
+
+	var obj = RefCounted.new()
+	@warning_ignore("unsafe_method_access")
+	var call_result = obj.call("get_class")
+	if call_result != null && call_result != "":
+		result.message = "Object.call() was NOT blocked (security issue!)"
+		result.actual = "Object.call() returned: " + str(call_result)
+	else:
+		result.passed = true
+		result.message = "Object.call() was blocked"
+		result.actual = "Object.call() returned null/empty"
+
+	return result

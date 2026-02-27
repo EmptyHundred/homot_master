@@ -1,0 +1,30 @@
+# Test nested method calls in sandbox mode
+func test():
+	print("Testing nested method calls")
+
+	# SafeWrapper should handle nested calls properly
+	# Each level of nesting goes through the wrapper
+
+	var obj = NestedCallTest.new()
+
+	print("Level 1 call:")
+	obj.level1_method()
+
+	print("Note: Each call level checks sandbox restrictions")
+	print("Nested calls test completed")
+
+class NestedCallTest:
+	func level1_method():
+		print("  Level 1 executing")
+		level2_method()
+
+	func level2_method():
+		print("    Level 2 executing")
+		level3_method()
+
+	func level3_method():
+		print("      Level 3 executing")
+		var node = Node.new()
+		node.set_name("nested_node")
+		print("      Created node: " + str(node.name))
+		node.free()

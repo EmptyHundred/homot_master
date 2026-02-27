@@ -1,0 +1,61 @@
+# Test that dangerous methods are blocked in sandbox mode
+func test():
+	print("Testing blocked methods in sandbox")
+
+	var obj = RefCounted.new()
+
+	# Test Object.call (should be blocked)
+	print("Test 1: Object.call()")
+	@warning_ignore("unsafe_method_access")
+	var call_result = obj.call("get_class")
+	if call_result != null && call_result != "":
+		print("  ✗ FAILED: Object.call() was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: Object.call() was blocked")
+
+	# Test Object.callv (should be blocked)
+	print("Test 2: Object.callv()")
+	@warning_ignore("unsafe_method_access")
+	var callv_result = obj.callv("get_class", [])
+	if callv_result != null && callv_result != "":
+		print("  ✗ FAILED: Object.callv() was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: Object.callv() was blocked")
+
+	# Test Object.set (should be blocked)
+	print("Test 3: Object.set()")
+	@warning_ignore("unsafe_method_access")
+	var set_worked = true
+	obj.set("script", null)
+	# If we get here without error, set() worked
+	if set_worked:
+		print("  ✗ FAILED: Object.set() was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: Object.set() was blocked")
+
+	# Test ClassDB.instantiate (should be blocked)
+	print("Test 4: ClassDB.instantiate()")
+	var instance = ClassDB.instantiate("RefCounted")
+	if instance != null:
+		print("  ✗ FAILED: ClassDB.instantiate() was NOT blocked (security issue!)")
+		instance.free()
+	else:
+		print("  ✓ PASSED: ClassDB.instantiate() was blocked")
+
+	# Test ClassDB.get_class_list (should be blocked)
+	print("Test 5: ClassDB.get_class_list()")
+	var class_list = ClassDB.get_class_list()
+	if class_list != null && class_list.size() > 0:
+		print("  ✗ FAILED: ClassDB.get_class_list() was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: ClassDB.get_class_list() was blocked")
+
+	# Test Engine.get_singleton (should be blocked)
+	print("Test 6: Engine.get_singleton()")
+	var singleton = Engine.get_singleton("OS")
+	if singleton != null:
+		print("  ✗ FAILED: Engine.get_singleton() was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: Engine.get_singleton() was blocked")
+
+	print("Blocked method tests completed")

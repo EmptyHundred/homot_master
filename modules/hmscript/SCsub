@@ -7,4 +7,9 @@ Import("env_modules")
 env_hmscript = env_modules.Clone()
 
 env_hmscript.add_source_files(env.modules_sources, "*.cpp")
+env_hmscript.add_source_files(env.modules_sources, "sandbox/*.cpp")
+
+if env["tests"]:
+    env_hmscript.add_source_files(env.modules_sources, "tests/*.cpp")
+    env_hmscript.add_source_files(env.modules_sources, "tests/*/*.cpp")
 

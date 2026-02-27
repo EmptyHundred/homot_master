@@ -1,0 +1,20 @@
+# Test that Engine.get_singleton() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block Engine.get_singleton()",
+		"passed": false,
+		"message": "",
+		"expected": "Engine.get_singleton() should return null or throw error",
+		"actual": ""
+	}
+
+	var singleton = Engine.get_singleton("OS")
+	if singleton != null:
+		result.message = "Engine.get_singleton() was NOT blocked (security issue!)"
+		result.actual = "Engine.get_singleton() returned: " + str(singleton)
+	else:
+		result.passed = true
+		result.message = "Engine.get_singleton() was blocked"
+		result.actual = "Engine.get_singleton() returned null"
+
+	return result

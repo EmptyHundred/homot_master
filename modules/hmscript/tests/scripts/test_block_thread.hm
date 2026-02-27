@@ -1,0 +1,21 @@
+# Test that Thread class is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block Thread",
+		"passed": false,
+		"message": "",
+		"expected": "Thread.new() should return null or throw error",
+		"actual": ""
+	}
+
+	var thread = Thread.new()
+	if thread != null:
+		result.message = "Thread was NOT blocked (security issue!)"
+		result.actual = "Thread.new() succeeded"
+		thread.free()
+	else:
+		result.passed = true
+		result.message = "Thread was blocked"
+		result.actual = "Thread.new() returned null"
+
+	return result

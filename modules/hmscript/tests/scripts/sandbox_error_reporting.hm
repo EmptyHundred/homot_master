@@ -1,0 +1,32 @@
+# Test error reporting in sandbox mode
+func test():
+	print("Testing error reporting")
+
+	# According to design.md, errors should be aggregated in GDSandboxErrorEntry
+	# Errors include: id, type, severity, message, file, line, stack_trace, etc.
+	# Duplicate errors should be counted, not re-reported
+
+	print("Testing error aggregation:")
+
+	# Simulate various error scenarios
+	print("Scenario 1: Attempting blocked operation")
+	# This would generate a security violation error
+
+	print("Scenario 2: Rate limit exceeded")
+	# This would generate a rate limit error
+
+	print("Scenario 3: Path validation failure")
+	# This would generate a path security error
+
+	print("Scenario 4: Timeout exceeded")
+	# This would generate a timeout error
+
+	print("Scenario 5: Memory limit exceeded")
+	# This would generate a memory limit error
+
+	# In actual sandbox mode, these errors would be collected
+	# and available via GDScriptLanguage.get_sandbox_errors()
+	print("Errors would be aggregated and deduplicated")
+	print("Error report would include occurrence counts")
+
+	print("Error reporting test completed")

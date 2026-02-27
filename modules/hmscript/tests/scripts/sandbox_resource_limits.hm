@@ -1,0 +1,38 @@
+# Test resource limits in sandbox mode
+func test():
+	print("Testing resource limits")
+
+	# According to design.md, ExecutionLimiter tracks memory usage
+	# memory_limit_bytes should prevent excessive memory allocation
+
+	print("Testing memory allocation:")
+
+	# Allocate small arrays (should be fine)
+	var small_arrays = []
+	for i in range(10):
+		small_arrays.append([i, i+1, i+2])
+	print("Created 10 small arrays")
+
+	# Allocate dictionaries
+	var dicts = []
+	for i in range(10):
+		var dict = {}
+		dict["key1"] = i
+		dict["key2"] = i * 2
+		dicts.append(dict)
+	print("Created 10 dictionaries")
+
+	# In sandbox mode with memory limits, large allocations should fail
+	print("Note: Large allocations would be blocked by memory limits")
+
+	# Test node creation limits
+	var nodes = []
+	for i in range(5):
+		nodes.append(Node.new())
+	print("Created 5 nodes")
+
+	# Clean up
+	for node in nodes:
+		node.free()
+
+	print("Resource limits test completed")

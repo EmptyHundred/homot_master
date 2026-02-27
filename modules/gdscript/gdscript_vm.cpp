@@ -35,6 +35,82 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 
+// -----------------------------------------------------------------------------
+// GDScript 沙盒辅助函数
+// -----------------------------------------------------------------------------
+// 这里复用 HMScript 模块中的配置 / 限流与错误聚合逻辑，对启用沙盒的脚本
+// 在 VM 中执行到 native MethodBind 调用时做安全检查与限流。
+
+static bool _gdscript_sandbox_check_method_bind(GDScriptInstance *p_instance,
+		Object *p_base_obj,
+		MethodBind *p_method,
+		const Variant **p_args,
+		int p_argcount,
+		const String &p_script_path,
+		int p_line,
+		String &r_err_text) {
+	if (!p_instance || !p_instance->is_sandbox_enabled()) {
+		return false;
+	}
+
+	GDScriptLanguage *lang = GDScriptLanguage::get_singleton();
+	if (!lang) {
+		return false;
+	}
+
+	String profile_id = p_instance->get_sandbox_profile_id();
+	if (profile_id.is_empty()) {
+		// 默认回落到 hm_default，方便 HMScript 统一管理。
+		profile_id = "hm_default";
+	}
+
+	GDScriptLanguage::SandboxProfile *profile = lang->ensure_sandbox_profile(profile_id);
+	if (!profile) {
+		return false;
+	}
+
+	StringName class_name;
+	if (p_base_obj) {
+		class_name = p_base_obj->get_class_name();
+	} else {
+		class_name = p_method->get_instance_class();
+	}
+	const StringName &method_name = p_method->get_name();
+
+	// 1. 类 / 方法 blocklist。
+	if (profile->config.is_class_or_parent_blocked(class_name) ||
+			profile->config.is_method_blocked_with_inheritance(class_name, method_name)) {
+		String msg = vformat("Sandbox blocked call to '%s.%s()'.", String(class_name), String(method_name));
+		profile->errors.add_error("security", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
+		r_err_text = msg;
+		return true;
+	}
+
+	// 2. 简单限流：所有 native MethodBind 调用统一按 WRITE 计入配额。
+	if (!profile->limiter.check_api_rate_limit(hmsandbox::HMSandboxApiCategory::WRITE)) {
+		String msg = vformat("Sandbox write limit exceeded when calling '%s.%s()'.", String(class_name), String(method_name));
+		profile->errors.add_error("limit", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
+		r_err_text = msg;
+		return true;
+	}
+
+	// 3. 路径检查：对敏感类的第一个字符串参数视为路径，做基本防护。
+	if (class_name == StringName("FileAccess") || class_name == StringName("DirAccess") ||
+			class_name == StringName("ResourceLoader") || class_name == StringName("ResourceSaver")) {
+		if (p_argcount > 0 && p_args[0] && p_args[0]->get_type() == Variant::STRING) {
+			String path = *p_args[0];
+			if (!profile->config.is_path_allowed(path)) {
+				String msg = vformat("Sandbox blocked unsafe path '%s' in %s.%s().", path, String(class_name), String(method_name));
+				profile->errors.add_error("security", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
+				r_err_text = msg;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 #ifdef DEBUG_ENABLED
 
 static bool _profile_count_as_native(const Object *p_base_obj, const StringName &p_methodname) {
@@ -2048,6 +2124,15 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 #endif
 				Variant **argptrs = instruction_args;
 
+				// 如果当前实例启用了 GDScript 沙盒，在实际调用 native 方法前做安全与限流检查。
+				if (p_instance && p_instance->sandbox_enabled) {
+					String sandbox_err;
+					if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, sandbox_err)) {
+						err_text = sandbox_err;
+						OPCODE_BREAK;
+					}
+				}
+
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
 				if (GDScriptLanguage::get_singleton()->profiling && GDScriptLanguage::get_singleton()->profile_native_calls) {
@@ -2157,6 +2242,15 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				const Variant **argptrs = const_cast<const Variant **>(instruction_args);
 
+				// 静态 native 调用也需要经过沙盒检查（例如 FileAccess.open 等）。
+				if (p_instance && p_instance->sandbox_enabled) {
+					String sandbox_err;
+					if (_gdscript_sandbox_check_method_bind(p_instance, nullptr, method, argptrs, argc, get_script()->get_script_path(), line, sandbox_err)) {
+						err_text = sandbox_err;
+						OPCODE_BREAK;
+					}
+				}
+
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
 				if (GDScriptLanguage::get_singleton()->profiling && GDScriptLanguage::get_singleton()->profile_native_calls) {
@@ -2199,6 +2293,15 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				GodotProfileZoneScriptSystemCall(method, source, name, method->get_name(), line);
 
 				Variant **argptrs = instruction_args;
+
+				// 静态 native 调用（validated 路径）同样需要沙盒检查。
+				if (p_instance && p_instance->sandbox_enabled) {
+					String sandbox_err;
+					if (_gdscript_sandbox_check_method_bind(p_instance, nullptr, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, sandbox_err)) {
+						err_text = sandbox_err;
+						OPCODE_BREAK;
+					}
+				}
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2292,6 +2395,15 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				Variant **argptrs = instruction_args;
 
+				// validated 实例方法调用同样需要沙盒检查。
+				if (p_instance && p_instance->sandbox_enabled) {
+					String sandbox_err;
+					if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, sandbox_err)) {
+						err_text = sandbox_err;
+						OPCODE_BREAK;
+					}
+				}
+
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
 				if (GDScriptLanguage::get_singleton()->profiling && GDScriptLanguage::get_singleton()->profile_native_calls) {
@@ -2343,6 +2455,15 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				Object *base_obj = *VariantInternal::get_object(base);
 #endif
 				Variant **argptrs = instruction_args;
+
+				// validated 实例方法调用同样需要沙盒检查（无返回值版本）。
+				if (p_instance && p_instance->sandbox_enabled) {
+					String sandbox_err;
+					if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, sandbox_err)) {
+						err_text = sandbox_err;
+						OPCODE_BREAK;
+					}
+				}
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
 				if (GDScriptLanguage::get_singleton()->profiling && GDScriptLanguage::get_singleton()->profile_native_calls) {

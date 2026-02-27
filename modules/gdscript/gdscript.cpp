@@ -38,6 +38,11 @@
 #include "gdscript_tokenizer_buffer.h"
 #include "gdscript_warning.h"
 
+// 复用 HMScript 模块中已经实现好的沙盒组件，避免在 GDScript 中重复造轮子。
+#include "modules/hmscript/sandbox/sandbox_config.h"
+#include "modules/hmscript/sandbox/sandbox_error.h"
+#include "modules/hmscript/sandbox/sandbox_limiter.h"
+
 #ifdef TOOLS_ENABLED
 #include "editor/gdscript_docgen.h"
 #endif
@@ -156,6 +161,9 @@ GDScriptInstance *GDScript::_create_instance(const Variant **p_args, int p_argco
 	instance->script = Ref<GDScript>(this);
 	instance->owner = p_owner;
 	instance->owner_id = p_owner->get_instance_id();
+	// 将脚本上的沙盒标记与 profile ID 传递给实例。
+	instance->sandbox_enabled = sandbox_enabled;
+	instance->sandbox_profile_id = sandbox_profile_id;
 #ifdef DEBUG_ENABLED
 	//needed for hot reloading
 	for (const KeyValue<StringName, MemberInfo> &E : member_indices) {
@@ -905,6 +913,11 @@ Error GDScript::reload(bool p_keep_state) {
 
 ScriptLanguage *GDScript::get_language() const {
 	return GDScriptLanguage::get_singleton();
+}
+
+void GDScript::set_sandbox_enabled(bool p_enabled, const String &p_profile_id) {
+	sandbox_enabled = p_enabled;
+	sandbox_profile_id = p_profile_id;
 }
 
 void GDScript::get_constants(HashMap<StringName, Variant> *p_constants) {
@@ -2567,6 +2580,53 @@ void GDScriptLanguage::reload_tool_script(const Ref<Script> &p_script, bool p_so
 	reload_scripts(scripts, p_soft_reload);
 }
 
+GDScriptLanguage::SandboxProfile *GDScriptLanguage::ensure_sandbox_profile(const String &p_id) {
+	HashMap<String, SandboxProfile>::Iterator it = sandbox_profiles.find(p_id);
+	if (it) {
+		return &it->value;
+	}
+
+	SandboxProfile profile;
+	HashMap<String, SandboxProfile>::Iterator inserted = sandbox_profiles.insert(p_id, profile);
+	return &inserted->value;
+}
+
+GDScriptLanguage::SandboxProfile *GDScriptLanguage::get_sandbox_profile(const String &p_id) {
+	HashMap<String, SandboxProfile>::Iterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return nullptr;
+	}
+	return &it->value;
+}
+
+void GDScriptLanguage::reset_sandbox_profiles_per_frame() {
+	for (KeyValue<String, SandboxProfile> &E : sandbox_profiles) {
+		E.value.limiter.reset_frame_counters();
+	}
+}
+
+Dictionary GDScriptLanguage::get_sandbox_errors(const String &p_id) const {
+	Dictionary result;
+
+	HashMap<String, SandboxProfile>::ConstIterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return result;
+	}
+
+	const SandboxProfile &profile = it->value;
+	result["errors"] = profile.errors.get_all_errors();
+	result["last_error"] = profile.errors.get_last_error();
+	return result;
+}
+
+String GDScriptLanguage::get_sandbox_error_report(const String &p_id) const {
+	HashMap<String, SandboxProfile>::ConstIterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return String();
+	}
+	return it->value.errors.get_error_report_markdown();
+}
+
 void GDScriptLanguage::frame() {
 #ifdef DEBUG_ENABLED
 	if (profiling) {
@@ -2585,8 +2645,15 @@ void GDScriptLanguage::frame() {
 			elem = elem->next();
 		}
 	}
-
 #endif
+
+	// 每帧重置所有已注册沙盒 profile 的配额计数。
+	reset_sandbox_profiles_per_frame();
+
+	// 如果外部注册了沙盒回调（例如 HMScript 沙盒），在每帧末尾调用一次。
+	if (sandbox_frame_callback) {
+		sandbox_frame_callback();
+	}
 }
 
 /* EDITOR FUNCTIONS */

@@ -1,0 +1,43 @@
+# Test safe operations that should be allowed in sandbox mode
+func test():
+	print("Testing safe operations allowed in sandbox")
+
+	# Basic math and logic operations should always work
+	print("Math operations:")
+	var a = 10
+	var b = 20
+	var sum = a + b
+	var product = a * b
+	print("10 + 20 = " + str(sum))
+	print("10 * 20 = " + str(product))
+
+	# String operations should work
+	print("String operations:")
+	var str1 = "Hello"
+	var str2 = "World"
+	var combined = str1 + " " + str2
+	print(combined)
+
+	# Array and Dictionary operations should work
+	print("Collection operations:")
+	var arr = [1, 2, 3, 4, 5]
+	var dict = {"key1": "value1", "key2": "value2"}
+	print("Array size: " + str(arr.size()))
+	print("Dict keys: " + str(dict.keys()))
+
+	# Basic Node operations (non-dangerous) should work
+	print("Safe Node operations:")
+	var node = Node.new()
+	node.set_name("test_node")
+	var node_name = node.get_name()
+	print("Node name: " + str(node_name))
+	node.free()
+
+	# Vector math should work
+	print("Vector operations:")
+	var v1 = Vector2(1.0, 2.0)
+	var v2 = Vector2(3.0, 4.0)
+	var v_sum = v1 + v2
+	print("Vector sum: " + str(v_sum))
+
+	print("Safe operations test completed")

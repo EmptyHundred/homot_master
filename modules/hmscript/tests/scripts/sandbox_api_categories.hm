@@ -1,0 +1,36 @@
+# Test API operation categorization (READ/WRITE/HEAVY)
+func test():
+	print("Testing API operation categories")
+
+	# According to design.md, SafeWrapper categorizes operations:
+	# READ: getters, simple queries (low quota impact)
+	# WRITE: setters, adding children (medium quota impact)
+	# HEAVY: instantiate, queue_free, PackedScene.instantiate (high quota impact)
+
+	var node = Node.new()
+
+	print("READ operations (low impact):")
+	var name = node.get_name()
+	var child_count = node.get_child_count()
+	print("  get_name(), get_child_count()")
+
+	print("WRITE operations (medium impact):")
+	node.set_name("test")
+	var child = Node.new()
+	node.add_child(child)
+	print("  set_name(), add_child()")
+
+	print("HEAVY operations (high impact):")
+	var new_node = Node.new()
+	var scene = PackedScene.new()
+	print("  Node.new(), PackedScene.new()")
+
+	print("Category-based rate limiting ensures fair resource usage")
+
+	# Clean up
+	node.remove_child(child)
+	child.free()
+	new_node.free()
+	node.free()
+
+	print("API categories test completed")

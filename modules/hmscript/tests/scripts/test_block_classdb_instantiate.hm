@@ -1,0 +1,21 @@
+# Test that ClassDB.instantiate() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block ClassDB.instantiate()",
+		"passed": false,
+		"message": "",
+		"expected": "ClassDB.instantiate() should return null or throw error",
+		"actual": ""
+	}
+
+	var instance = ClassDB.instantiate("RefCounted")
+	if instance != null:
+		result.message = "ClassDB.instantiate() was NOT blocked (security issue!)"
+		result.actual = "ClassDB.instantiate() succeeded"
+		instance.free()
+	else:
+		result.passed = true
+		result.message = "ClassDB.instantiate() was blocked"
+		result.actual = "ClassDB.instantiate() returned null"
+
+	return result

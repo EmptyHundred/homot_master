@@ -1,0 +1,40 @@
+# Test callable and signal restrictions in sandbox mode
+func test():
+	print("Testing callable and signal restrictions")
+
+	# Test safe callable usage
+	print("Creating safe callable:")
+	var obj = TestObject.new()
+	var safe_callable = Callable(obj, "safe_method")
+	print("Calling safe callable:")
+	safe_callable.call()
+
+	# Test signal connections
+	print("Testing signal connections:")
+	var emitter = SignalEmitter.new()
+	var receiver = SignalReceiver.new()
+
+	emitter.test_signal.connect(receiver.on_signal_received)
+	print("Signal connected")
+
+	emitter.emit_test_signal()
+	print("Signal emitted")
+
+	# In sandbox mode, dangerous callables would be restricted
+	print("Note: Callables to blocked methods would be rejected")
+
+	print("Callable restrictions test completed")
+
+class TestObject:
+	func safe_method():
+		print("Safe method executed")
+
+class SignalEmitter:
+	signal test_signal
+
+	func emit_test_signal():
+		test_signal.emit()
+
+class SignalReceiver:
+	func on_signal_received():
+		print("Signal received in receiver")

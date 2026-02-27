@@ -1,0 +1,22 @@
+# Test that Object.callv() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block Object.callv()",
+		"passed": false,
+		"message": "",
+		"expected": "Object.callv() should return null or throw error",
+		"actual": ""
+	}
+
+	var obj = RefCounted.new()
+	@warning_ignore("unsafe_method_access")
+	var callv_result = obj.callv("get_class", [])
+	if callv_result != null && callv_result != "":
+		result.message = "Object.callv() was NOT blocked (security issue!)"
+		result.actual = "Object.callv() returned: " + str(callv_result)
+	else:
+		result.passed = true
+		result.message = "Object.callv() was blocked"
+		result.actual = "Object.callv() returned null/empty"
+
+	return result

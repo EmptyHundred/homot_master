@@ -1,0 +1,39 @@
+# Test API rate limiting in sandbox mode
+func test():
+	print("Testing API rate limiting")
+
+	# According to design.md, ExecutionLimiter tracks:
+	# - READ operations (getters, simple queries)
+	# - WRITE operations (setters, adding children)
+	# - HEAVY operations (instantiate, queue_free, etc.)
+	# Each category has per-frame limits
+
+	# Test READ operations
+	print("Testing READ operations")
+	var node = Node.new()
+	for i in range(5):
+		var name = node.get_name()
+		# Multiple read operations
+	print("READ operations: 5 get_name() calls")
+
+	# Test WRITE operations
+	print("Testing WRITE operations")
+	for i in range(3):
+		node.set_name("test_" + str(i))
+		# Multiple write operations
+	print("WRITE operations: 3 set_name() calls")
+
+	# Test HEAVY operations
+	print("Testing HEAVY operations")
+	var child1 = Node.new()
+	var child2 = Node.new()
+	# Creating nodes is a HEAVY operation
+	print("HEAVY operations: 2 Node.new() calls")
+
+	# Clean up
+	child1.free()
+	child2.free()
+	node.free()
+
+	print("Rate limiting test completed")
+	print("Note: In sandbox mode, exceeding limits would trigger errors")

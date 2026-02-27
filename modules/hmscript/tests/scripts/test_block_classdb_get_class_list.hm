@@ -1,0 +1,20 @@
+# Test that ClassDB.get_class_list() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block ClassDB.get_class_list()",
+		"passed": false,
+		"message": "",
+		"expected": "ClassDB.get_class_list() should return null/empty or throw error",
+		"actual": ""
+	}
+
+	var class_list = ClassDB.get_class_list()
+	if class_list != null && class_list.size() > 0:
+		result.message = "ClassDB.get_class_list() was NOT blocked (security issue!)"
+		result.actual = "ClassDB.get_class_list() returned " + str(class_list.size()) + " classes"
+	else:
+		result.passed = true
+		result.message = "ClassDB.get_class_list() was blocked"
+		result.actual = "ClassDB.get_class_list() returned null/empty"
+
+	return result

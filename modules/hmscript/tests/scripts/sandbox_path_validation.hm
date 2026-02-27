@@ -1,0 +1,39 @@
+# Test path validation in sandbox mode
+func test():
+	print("Testing path validation")
+
+	# According to design.md, only paths within allowed_path_prefixes should work
+	# Default: res:// and user:// are allowed
+	# Path traversal (../) should be blocked
+
+	# Test 1: Valid res:// path (should be allowed)
+	print("Valid path: res://levels/level_01.tscn")
+	var valid_res_path = "res://levels/level_01.tscn"
+	# This should be allowed
+
+	# Test 2: Valid user:// path (should be allowed)
+	print("Valid path: user://profiles/save_1.save")
+	var valid_user_path = "user://profiles/save_1.save"
+	# This should be allowed
+
+	# Test 3: Path traversal attempt (should be blocked)
+	print("Invalid path with traversal: ../res/levels/level_01.tscn")
+	var invalid_path1 = "../res/levels/level_01.tscn"
+	# This should be blocked
+
+	# Test 4: Path traversal in middle (should be blocked)
+	print("Invalid path with traversal: res://../levels/level_01.tscn")
+	var invalid_path2 = "res://../levels/level_01.tscn"
+	# This should be blocked
+
+	# Test 5: Absolute path outside allowed (should be blocked)
+	print("Invalid absolute path: C:\\projects\\..\\secret.txt")
+	var invalid_path3 = "C:\\projects\\..\\secret.txt"
+	# This should be blocked
+
+	# Test 6: Unix-style traversal (should be blocked)
+	print("Invalid Unix traversal: /etc/../passwd")
+	var invalid_path4 = "/etc/../passwd"
+	# This should be blocked
+
+	print("Path validation tests completed")

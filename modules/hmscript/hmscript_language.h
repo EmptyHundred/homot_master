@@ -6,6 +6,11 @@
 
 #include "modules/gdscript/gdscript.h"
 
+// HMScript 沙盒运行时（仅在 HMScript 模块内部使用）。
+namespace hmsandbox {
+class HMSandboxRuntime;
+}
+
 class HMScriptLanguage : public ScriptLanguage {
 	GDCLASS(HMScriptLanguage, ScriptLanguage);
 
@@ -13,6 +18,9 @@ protected:
 	static void _bind_methods() {}
 
 public:
+	// 访问全局 HMSandbox 运行时实例，用于上层工具或调试。
+	static hmsandbox::HMSandboxRuntime *get_sandbox_runtime();
+
 	virtual String get_name() const override;
 
 	/* LANGUAGE FUNCTIONS */
@@ -71,6 +79,7 @@ class ResourceFormatLoaderHMScript : public ResourceFormatLoaderGDScript {
 	GDSOFTCLASS(ResourceFormatLoaderHMScript, ResourceFormatLoaderGDScript);
 
 public:
+	virtual Ref<Resource> load(const String &p_path, const String &p_original_path = "", Error *r_error = nullptr, bool p_use_sub_threads = false, float *r_progress = nullptr, CacheMode p_cache_mode = CACHE_MODE_REUSE) override;
 	virtual void get_recognized_extensions(List<String> *p_extensions) const override;
 	virtual bool handles_type(const String &p_type) const override;
 	virtual String get_resource_type(const String &p_path) const override;

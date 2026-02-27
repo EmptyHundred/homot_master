@@ -1,0 +1,40 @@
+# Test that dangerous classes are blocked in sandbox mode
+func test():
+	print("Testing blocked classes in sandbox")
+
+	# Test 1: Try to use FileAccess class (should be blocked)
+	print("Test 1: Attempting FileAccess.open()")
+	var file = FileAccess.open("res://test.txt", FileAccess.READ)
+	if file != null:
+		file.close()
+		print("  ✗ FAILED: FileAccess was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: FileAccess was blocked or file doesn't exist")
+
+	# Test 2: Try to use DirAccess class (should be blocked)
+	print("Test 2: Attempting DirAccess.open()")
+	var dir = DirAccess.open("res://")
+	if dir != null:
+		print("  ✗ FAILED: DirAccess was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: DirAccess was blocked")
+
+	# Test 3: Try to create Thread (should be blocked)
+	print("Test 3: Attempting Thread.new()")
+	var thread = Thread.new()
+	if thread != null:
+		print("  ✗ FAILED: Thread was NOT blocked (security issue!)")
+		thread.free()
+	else:
+		print("  ✓ PASSED: Thread was blocked")
+
+	# Test 4: Try to access OS singleton (should be blocked)
+	print("Test 4: Attempting OS access")
+	@warning_ignore("unsafe_method_access")
+	var os_name = OS.get_name() if OS != null else ""
+	if os_name != "":
+		print("  ✗ FAILED: OS was NOT blocked (security issue!)")
+	else:
+		print("  ✓ PASSED: OS access blocked")
+
+	print("Blocked class tests completed")

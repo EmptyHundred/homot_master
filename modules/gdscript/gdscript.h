@@ -40,6 +40,12 @@
 #include "core/object/script_language.h"
 #include "core/templates/rb_set.h"
 
+// Reuse HMScript sandbox utilities to provide security and rate limiting
+// facilities to GDScript without复制一整套实现。
+#include "modules/hmscript/sandbox/sandbox_config.h"
+#include "modules/hmscript/sandbox/sandbox_error.h"
+#include "modules/hmscript/sandbox/sandbox_limiter.h"
+
 class GDScriptNativeClass : public RefCounted {
 	GDCLASS(GDScriptNativeClass, RefCounted);
 
@@ -189,6 +195,10 @@ private:
 	SelfList<GDScript> script_list;
 
 	SelfList<GDScriptFunctionState>::List pending_func_states;
+
+	// 标记脚本是否启用 GDScript 沙盒，以及所属的沙盒 profile ID（由上层模块管理）。
+	bool sandbox_enabled = false;
+	String sandbox_profile_id;
 
 	GDScriptFunction *_super_constructor(GDScript *p_script);
 	void _super_implicit_constructor(GDScript *p_script, GDScriptInstance *p_instance, Callable::CallError &r_error);
@@ -343,6 +353,11 @@ public:
 	virtual bool is_placeholder_fallback_enabled() const override { return placeholder_fallback_enabled; }
 #endif
 
+	// 启用 / 禁用 GDScript 沙盒，并设置所属 profile ID（例如 "hm_default"）。
+	void set_sandbox_enabled(bool p_enabled, const String &p_profile_id = String());
+	bool is_sandbox_enabled() const { return sandbox_enabled; }
+	String get_sandbox_profile_id() const { return sandbox_profile_id; }
+
 	GDScript();
 	~GDScript();
 };
@@ -365,6 +380,10 @@ class GDScriptInstance : public ScriptInstance {
 	Vector<Variant> members;
 
 	SelfList<GDScriptFunctionState>::List pending_func_states;
+
+	// 实例级沙盒标记与 profile ID，从所属脚本拷贝而来。
+	bool sandbox_enabled = false;
+	String sandbox_profile_id;
 
 	void _call_implicit_ready_recursively(GDScript *p_script);
 
@@ -404,6 +423,10 @@ public:
 
 	GDScriptInstance() {}
 	~GDScriptInstance();
+
+	// 沙盒辅助查询接口，供 VM 等非友元代码使用。
+	bool is_sandbox_enabled() const { return sandbox_enabled; }
+	const String &get_sandbox_profile_id() const { return sandbox_profile_id; }
 };
 
 class GDScriptLanguage : public ScriptLanguage {
@@ -468,6 +491,21 @@ class GDScriptLanguage : public ScriptLanguage {
 	void _extension_loaded(const Ref<GDExtension> &p_extension);
 	void _extension_unloading(const Ref<GDExtension> &p_extension);
 #endif
+
+	// 可选沙盒帧回调，由上层（如 HMScript）注册，用于每帧执行限流重置等逻辑。
+	void (*sandbox_frame_callback)(void) = nullptr;
+
+public:
+	// 简单的 GDScript 沙盒 profile：直接复用 HMScript 的配置、限流与错误聚合实现，
+	// 由上层（如 HMScript 或未来的 GDScript 沙盒管理器）按需创建与使用。
+	struct SandboxProfile {
+		hmsandbox::HMSandboxConfig config;
+		hmsandbox::HMSandboxLimiter limiter;
+		hmsandbox::HMSandboxErrorRegistry errors;
+	};
+
+private:
+	HashMap<String, SandboxProfile> sandbox_profiles;
 
 public:
 	bool debug_break(const String &p_error, bool p_allow_continue = true);
@@ -629,6 +667,16 @@ public:
 	virtual void reload_all_scripts() override;
 	virtual void reload_scripts(const Array &p_scripts, bool p_soft_reload) override;
 	virtual void reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) override;
+
+	// GDScript 沙盒管理 API：允许外部模块基于 ID 获取 / 创建 profile，并查询错误。
+	SandboxProfile *get_sandbox_profile(const String &p_id);
+	SandboxProfile *ensure_sandbox_profile(const String &p_id);
+	void reset_sandbox_profiles_per_frame();
+	Dictionary get_sandbox_errors(const String &p_id) const;
+	String get_sandbox_error_report(const String &p_id) const;
+
+	// 注册一个在每帧调用的沙盒回调（可为 nullptr 表示禁用）。
+	void set_sandbox_frame_callback(void (*p_callback)(void)) { sandbox_frame_callback = p_callback; }
 
 	virtual void frame() override;
 

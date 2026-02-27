@@ -1,0 +1,39 @@
+# Test that sandbox checks work with inheritance
+func test():
+	print("Testing sandbox inheritance checks")
+
+	# According to design.md, is_class_or_parent_blocked should check parent classes
+	# If a parent class is blocked, child classes should also be blocked
+
+	# Example: If Object methods are blocked, they should be blocked on all subclasses
+	print("Testing method blocking with inheritance:")
+
+	var ref = RefCounted.new()
+	# RefCounted extends Object
+	# Object.call is blocked, so ref.call should also be blocked
+	print("Created RefCounted instance (extends Object)")
+
+	var node = Node.new()
+	# Node extends Object
+	# Object methods should be blocked on Node too
+	print("Created Node instance (extends Object)")
+
+	# Test with custom inheritance
+	var derived = DerivedClass.new()
+	print("Created DerivedClass instance")
+
+	# Safe methods should work
+	derived.safe_method()
+	print("Safe method call succeeded")
+
+	node.free()
+
+	print("Inheritance check test completed")
+
+class BaseClass:
+	func safe_method():
+		pass
+
+class DerivedClass extends BaseClass:
+	func another_safe_method():
+		pass

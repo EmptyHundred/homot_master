@@ -1,0 +1,18 @@
+# Test that Object.set() is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block Object.set()",
+		"passed": false,
+		"message": "",
+		"expected": "Object.set() should throw error",
+		"actual": ""
+	}
+
+	var obj = RefCounted.new()
+	@warning_ignore("unsafe_method_access")
+	obj.set("script", null)
+	# If we reach here, set() was NOT blocked
+	result.message = "Object.set() was NOT blocked (security issue!)"
+	result.actual = "Object.set() completed without error"
+
+	return result

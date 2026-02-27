@@ -1,0 +1,20 @@
+# Test that DirAccess class is blocked
+func test() -> Dictionary:
+	var result = {
+		"test_name": "Block DirAccess",
+		"passed": false,
+		"message": "",
+		"expected": "DirAccess.open() should return null or throw error",
+		"actual": ""
+	}
+
+	var dir = DirAccess.open("res://")
+	if dir != null:
+		result.message = "DirAccess was NOT blocked (security issue!)"
+		result.actual = "DirAccess.open() succeeded"
+	else:
+		result.passed = true
+		result.message = "DirAccess was blocked"
+		result.actual = "DirAccess.open() returned null"
+
+	return result
