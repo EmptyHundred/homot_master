@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls -1 test_block_*.hm)"
+      "Bash(ls -1 test_block_*.hm)",
+      "Bash(xargs grep -l \"resource_format.*tscn\\\\|tscn.*loader\")"
     ]
   }
 }

@@ -85,6 +85,8 @@ public:
 
 	Vector<String> list_directory(const String &p_directory);
 
+	Dictionary list_resources();
+
 	ResourceLoader() { singleton = this; }
 };
 
