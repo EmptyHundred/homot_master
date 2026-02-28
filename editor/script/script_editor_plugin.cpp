@@ -36,6 +36,7 @@
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
+#include "core/object/class_db.h"
 #include "core/os/keyboard.h"
 #include "core/os/os.h"
 #include "core/string/fuzzy_search.h"
@@ -1480,7 +1481,7 @@ void ScriptEditor::_notification(int p_what) {
 
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
 			if (EditorThemeManager::is_generated_theme_outdated() ||
-					EditorSettings::get_singleton()->check_changed_settings_in_group("interface/editor") ||
+					EditorSettings::get_singleton()->check_changed_settings_in_group("interface/editor/fonts") ||
 					EditorSettings::get_singleton()->check_changed_settings_in_group("text_editor") ||
 					EditorSettings::get_singleton()->check_changed_settings_in_group("docks/filesystem")) {
 				_apply_editor_settings();
@@ -2090,12 +2091,20 @@ void ScriptEditor::_update_script_names() {
 		}
 	}
 
+	bool has_active_tab = false;
+
 	for (const _ScriptEditorItemData &sedata_i : sedata) {
 		if (tab_container->get_current_tab() == sedata_i.index) {
 			script_name_button->set_text(sedata_i.name);
+			script_name_button->show();
 			_calculate_script_name_button_size();
+			has_active_tab = true;
 			break;
 		}
+	}
+
+	if (!has_active_tab) {
+		script_name_button->hide();
 	}
 
 	if (!waiting_update_names) {
@@ -2995,7 +3004,7 @@ void ScriptEditor::input(const Ref<InputEvent> &p_event) {
 	// the shortcut to be used regardless of the click location.
 	// This feature can be disabled to avoid interfering with other uses of the additional
 	// mouse buttons, such as push-to-talk in a VoIP program.
-	if (EDITOR_GET("interface/editor/mouse_extra_buttons_navigate_history")) {
+	if (EDITOR_GET("interface/editor/input/mouse_extra_buttons_navigate_history")) {
 		const Ref<InputEventMouseButton> mb = p_event;
 
 		// Navigate the script history using additional mouse buttons present on some mice.
