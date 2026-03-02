@@ -4,16 +4,18 @@
 
 using namespace hmsandbox;
 
-// 全局 HMSandbox 运行时实例，目前简单实现为单例。
-static HMSandboxRuntime g_hm_sandbox_runtime;
+// 全局 HMSandbox 运行时实例，在 register_types.cpp 中创建。
+extern HMSandboxRuntime *hm_sandbox_runtime;
 
 static void _hm_sandbox_frame_callback() {
 	// 每帧重置写入/重操作配额等。
-	g_hm_sandbox_runtime.reset_frame_counters();
+	if (hm_sandbox_runtime) {
+		hm_sandbox_runtime->reset_frame_counters();
+	}
 }
 
 HMSandboxRuntime *HMScriptLanguage::get_sandbox_runtime() {
-	return &g_hm_sandbox_runtime;
+	return hm_sandbox_runtime;
 }
 
 String HMScriptLanguage::get_name() const {

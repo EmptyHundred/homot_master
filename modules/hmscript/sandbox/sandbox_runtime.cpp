@@ -4,10 +4,25 @@
 
 #include "sandbox_runtime.h"
 
+#include "core/io/resource_loader.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 
 namespace hmsandbox {
+
+void HMSandboxRuntime::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_timeout_ms", "ms"), &HMSandboxRuntime::set_timeout_ms);
+	ClassDB::bind_method(D_METHOD("set_memory_limit_mb", "mb"), &HMSandboxRuntime::set_memory_limit_mb);
+	ClassDB::bind_method(D_METHOD("set_write_ops_per_frame", "count"), &HMSandboxRuntime::set_write_ops_per_frame);
+	ClassDB::bind_method(D_METHOD("set_heavy_ops_per_frame", "count"), &HMSandboxRuntime::set_heavy_ops_per_frame);
+	ClassDB::bind_method(D_METHOD("reset_frame_counters"), &HMSandboxRuntime::reset_frame_counters);
+
+	ClassDB::bind_method(D_METHOD("load_sandbox", "directory", "tscn_filename"), &HMSandboxRuntime::load_sandbox);
+
+	ClassDB::bind_method(D_METHOD("get_last_error"), &HMSandboxRuntime::get_last_error);
+	ClassDB::bind_method(D_METHOD("get_all_errors"), &HMSandboxRuntime::get_all_errors);
+	ClassDB::bind_method(D_METHOD("get_error_report_markdown"), &HMSandboxRuntime::get_error_report_markdown);
+}
 
 HMSandboxRuntime::HMSandboxRuntime() {
 }
@@ -92,6 +107,26 @@ Variant HMSandboxRuntime::call_script_function(const Ref<Script> &p_script,
 	}
 
 	return ret;
+}
+
+Ref<Resource> HMSandboxRuntime::load_sandbox(const String &p_directory, const String &p_tscn_filename) {
+	// Construct the full path by combining directory and filename
+	String full_path = p_directory;
+	if (!full_path.is_empty() && !full_path.ends_with("/")) {
+		full_path += "/";
+	}
+	full_path += p_tscn_filename;
+
+	// Load the resource using ResourceLoader without cache
+	Error err = OK;
+	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+
+	if (err != OK || resource.is_null()) {
+		add_error("resource_load", "Failed to load resource: " + full_path);
+		return Ref<Resource>();
+	}
+
+	return resource;
 }
 
 void HMSandboxRuntime::add_error(const String &p_type,

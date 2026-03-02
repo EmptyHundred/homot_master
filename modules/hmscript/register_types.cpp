@@ -31,17 +31,29 @@
 #include "register_types.h"
 
 #include "hmscript_language.h"
+#include "sandbox/sandbox_runtime.h"
 
+#include "core/config/engine.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/script_language.h"
 
+using namespace hmsandbox;
+
 HMScriptLanguage *script_language_hm = nullptr;
+HMSandboxRuntime *hm_sandbox_runtime = nullptr;
 Ref<ResourceFormatLoaderHMScript> resource_loader_hm;
 Ref<ResourceFormatSaverHMScript> resource_saver_hm;
 
 void initialize_hmscript_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
+		// Register the HMSandboxRuntime class
+		GDREGISTER_CLASS(HMSandboxRuntime);
+
+		// Create and register the HMSandbox runtime singleton
+		hm_sandbox_runtime = memnew(HMSandboxRuntime);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("HMSandbox", hm_sandbox_runtime));
+
 		script_language_hm = memnew(HMScriptLanguage);
 		ScriptServer::register_language(script_language_hm);
 
@@ -67,6 +79,13 @@ void uninitialize_hmscript_module(ModuleInitializationLevel p_level) {
 
 		ResourceSaver::remove_resource_format_saver(resource_saver_hm);
 		resource_saver_hm.unref();
+
+		// Unregister and delete the HMSandbox runtime singleton
+		if (hm_sandbox_runtime) {
+			Engine::get_singleton()->remove_singleton("HMSandbox");
+			memdelete(hm_sandbox_runtime);
+			hm_sandbox_runtime = nullptr;
+		}
 	}
 }
 

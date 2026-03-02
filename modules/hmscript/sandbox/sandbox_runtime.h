@@ -8,18 +8,25 @@
 #include "sandbox_error.h"
 #include "sandbox_limiter.h"
 
+#include "core/object/object.h"
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
 #include "core/variant/variant.h"
 
 class Node;
 class Script;
+class Resource;
 
 namespace hmsandbox {
 
 // 轻量运行时聚合器，将配置、限流和错误仓库组合在一起。
 // 不直接修改 GDScript 内部，只作为 HMScript 等上层入口的工具类。
-class HMSandboxRuntime {
+class HMSandboxRuntime : public Object {
+	GDCLASS(HMSandboxRuntime, Object);
+
+protected:
+	static void _bind_methods();
+
 public:
 	HMSandboxRuntime();
 
@@ -45,6 +52,10 @@ public:
 			const StringName &p_method,
 			const Array &p_args,
 			String &r_error);
+
+	// 在沙盒环境中加载场景文件。
+	// 从指定目录和文件名加载 .tscn 文件，返回加载的资源。
+	Ref<Resource> load_sandbox(const String &p_directory, const String &p_tscn_filename);
 
 	// 记录来自外部的错误（例如自定义包装层捕获到的异常）。
 	void add_error(const String &p_type,
