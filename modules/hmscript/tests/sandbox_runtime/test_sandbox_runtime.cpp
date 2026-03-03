@@ -6,10 +6,10 @@
 
 #include "modules/hmscript/sandbox/sandbox_runtime.h"
 
-namespace TestHMSandboxRuntime {
+namespace TestHMSandbox {
 
 TEST_CASE("[HMSandbox] call_script_function invalid input") {
-	hmsandbox::HMSandboxRuntime runtime;
+	hmsandbox::HMSandbox runtime;
 
 	Ref<Script> script; // null
 	Object *owner = nullptr;
@@ -25,7 +25,7 @@ TEST_CASE("[HMSandbox] call_script_function invalid input") {
 }
 
 TEST_CASE("[HMSandbox] call_script_function respects memory limit") {
-	hmsandbox::HMSandboxRuntime runtime;
+	hmsandbox::HMSandbox runtime;
 
 	// 将当前使用量设置为超过上限的值，模拟超限场景。
 	runtime.set_memory_limit_mb(1);
@@ -44,5 +44,5 @@ TEST_CASE("[HMSandbox] call_script_function respects memory limit") {
 	CHECK(all_errors.size() >= 1);
 }
 
-} // namespace TestHMSandboxRuntime
+} // namespace TestHMSandbox
 

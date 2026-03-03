@@ -8,27 +8,47 @@
 #include "sandbox_error.h"
 #include "sandbox_limiter.h"
 
-#include "core/object/object.h"
 #include "core/string/ustring.h"
 #include "core/variant/dictionary.h"
 #include "core/variant/variant.h"
+#include "scene/main/node.h"
 
-class Node;
 class Script;
 class Resource;
+class PackedScene;
 
 namespace hmsandbox {
 
+class HMSandboxManager;
+
 // 轻量运行时聚合器，将配置、限流和错误仓库组合在一起。
 // 不直接修改 GDScript 内部，只作为 HMScript 等上层入口的工具类。
-class HMSandboxRuntime : public Object {
-	GDCLASS(HMSandboxRuntime, Object);
+// 可实例化，每个实例代表一个独立的沙盒环境。
+class HMSandbox : public Node {
+	GDCLASS(HMSandbox, Node);
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 
 public:
-	HMSandboxRuntime();
+	HMSandbox();
+	~HMSandbox();
+
+	void set_profile_id(const String &p_id);
+	String get_profile_id() const;
+
+	void set_packed_scene(const Ref<PackedScene> &p_scene);
+	Ref<PackedScene> get_packed_scene() const;
+
+	void set_root_node(Node *p_node);
+	Node *get_root_node() const;
+
+	void set_load_directory(const String &p_directory);
+	String get_load_directory() const;
+
+	void set_scene_filename(const String &p_filename);
+	String get_scene_filename() const;
 
 	HMSandboxConfig &get_config() { return config; }
 	const HMSandboxConfig &get_config() const { return config; }
@@ -53,10 +73,6 @@ public:
 			const Array &p_args,
 			String &r_error);
 
-	// 在沙盒环境中加载场景文件。
-	// 从指定目录和文件名加载 .tscn 文件，返回加载的资源。
-	Ref<Resource> load_sandbox(const String &p_directory, const String &p_tscn_filename);
-
 	// 记录来自外部的错误（例如自定义包装层捕获到的异常）。
 	void add_error(const String &p_type,
 			const String &p_message,
@@ -72,10 +88,35 @@ public:
 	Array get_all_errors() const { return errors.get_all_errors(); }
 	String get_error_report_markdown() const { return errors.get_error_report_markdown(); }
 
+	void set_dependencies(const PackedStringArray &p_dependencies);
+	PackedStringArray get_dependencies() const;
+
+	// Unload the sandbox, cleaning up resources and clearing caches
+	void unload();
+
+	// Static loader method - loads a sandbox from directory and scene file
+	static HMSandbox *load(const String &p_directory, const String &p_tscn_filename);
+
+	// Collect all .hm and .hmc files recursively from a directory
+	static PackedStringArray collect_dependencies(const String &p_directory);
+
+	// Generate a unique UUID for sandbox identification
+	static String generate_uuid();
+
 private:
+	String profile_id;
+	Ref<PackedScene> packed_scene;
+
+	String load_directory; // Directory from which the sandbox was loaded
+	String scene_filename; // Filename of the scene file (e.g., "scene.tscn")
+
+	PackedStringArray dependencies; // All .hm and .hmc file paths found in the sandbox directory
+
 	HMSandboxConfig config;
 	HMSandboxLimiter limiter;
 	HMSandboxErrorRegistry errors;
+
+	friend class HMSandboxManager;
 };
 
 } // namespace hmsandbox

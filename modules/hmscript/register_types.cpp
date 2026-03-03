@@ -31,6 +31,7 @@
 #include "register_types.h"
 
 #include "hmscript_language.h"
+#include "sandbox/sandbox_manager.h"
 #include "sandbox/sandbox_runtime.h"
 
 #include "core/config/engine.h"
@@ -38,21 +39,27 @@
 #include "core/io/resource_saver.h"
 #include "core/object/script_language.h"
 
-using namespace hmsandbox;
-
 HMScriptLanguage *script_language_hm = nullptr;
-HMSandboxRuntime *hm_sandbox_runtime = nullptr;
 Ref<ResourceFormatLoaderHMScript> resource_loader_hm;
 Ref<ResourceFormatSaverHMScript> resource_saver_hm;
 
+namespace hmsandbox {
+HMSandboxManager *hm_sandbox_manager = nullptr;
+}
+
+using namespace hmsandbox;
+
 void initialize_hmscript_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
-		// Register the HMSandboxRuntime class
-		GDREGISTER_CLASS(HMSandboxRuntime);
+		// Register the HMSandbox class (instantiable)
+		GDREGISTER_CLASS(HMSandbox);
 
-		// Create and register the HMSandbox runtime singleton
-		hm_sandbox_runtime = memnew(HMSandboxRuntime);
-		Engine::get_singleton()->add_singleton(Engine::Singleton("HMSandbox", hm_sandbox_runtime));
+		// Register the HMSandboxManager class
+		GDREGISTER_CLASS(HMSandboxManager);
+
+		// Create and register the HMSandbox manager singleton
+		hm_sandbox_manager = memnew(HMSandboxManager);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("HMSandboxManager", hm_sandbox_manager));
 
 		script_language_hm = memnew(HMScriptLanguage);
 		ScriptServer::register_language(script_language_hm);
@@ -80,11 +87,11 @@ void uninitialize_hmscript_module(ModuleInitializationLevel p_level) {
 		ResourceSaver::remove_resource_format_saver(resource_saver_hm);
 		resource_saver_hm.unref();
 
-		// Unregister and delete the HMSandbox runtime singleton
-		if (hm_sandbox_runtime) {
-			Engine::get_singleton()->remove_singleton("HMSandbox");
-			memdelete(hm_sandbox_runtime);
-			hm_sandbox_runtime = nullptr;
+		// Unregister and delete the HMSandbox manager singleton
+		if (hm_sandbox_manager) {
+			Engine::get_singleton()->remove_singleton("HMSandboxManager");
+			memdelete(hm_sandbox_manager);
+			hm_sandbox_manager = nullptr;
 		}
 	}
 }

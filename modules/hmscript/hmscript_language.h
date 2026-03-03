@@ -6,9 +6,9 @@
 
 #include "modules/gdscript/gdscript.h"
 
-// HMScript 沙盒运行时（仅在 HMScript 模块内部使用）。
+// HMScript 沙盒管理器（仅在 HMScript 模块内部使用）。
 namespace hmsandbox {
-class HMSandboxRuntime;
+class HMSandboxManager;
 }
 
 class HMScriptLanguage : public ScriptLanguage {
@@ -18,8 +18,8 @@ protected:
 	static void _bind_methods() {}
 
 public:
-	// 访问全局 HMSandbox 运行时实例，用于上层工具或调试。
-	static hmsandbox::HMSandboxRuntime *get_sandbox_runtime();
+	// 访问全局 HMSandbox 管理器实例，用于上层工具或调试。
+	static hmsandbox::HMSandboxManager *get_sandbox_manager();
 
 	virtual String get_name() const override;
 

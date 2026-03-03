@@ -37,12 +37,15 @@
 #include "core/debugger/script_debugger.h"
 #include "core/io/file_access.h"
 #include "core/io/marshalls.h"
+#include "core/io/resource.h"
 #include "core/math/geometry_2d.h"
 #include "core/math/geometry_3d.h"
 #include "core/object/class_db.h"
+#include "core/object/object.h"
 #include "core/os/keyboard.h"
 #include "core/os/main_loop.h"
 #include "core/os/thread_safe.h"
+#include "core/templates/local_vector.h"
 #include "core/variant/typed_array.h"
 
 namespace CoreBind {
@@ -151,6 +154,135 @@ Dictionary ResourceLoader::list_resources() {
 	return result;
 }
 
+bool ResourceLoader::_check_variant_for_resource_path(const Variant &p_variant, const String &p_target_path) {
+	switch (p_variant.get_type()) {
+		case Variant::OBJECT: {
+			Ref<Resource> r = p_variant;
+			if (r.is_valid() && r->get_path() == p_target_path) {
+				return true;
+			}
+		} break;
+		case Variant::ARRAY: {
+			Array a = p_variant;
+			for (int i = 0; i < a.size(); i++) {
+				if (_check_variant_for_resource_path(a[i], p_target_path)) {
+					return true;
+				}
+			}
+		} break;
+		case Variant::DICTIONARY: {
+			Dictionary d = p_variant;
+			for (const KeyValue<Variant, Variant> &kv : d) {
+				if (_check_variant_for_resource_path(kv.key, p_target_path) ||
+						_check_variant_for_resource_path(kv.value, p_target_path)) {
+					return true;
+				}
+			}
+		} break;
+		default:
+			break;
+	}
+	return false;
+}
+
+void ResourceLoader::_check_property_for_resource(Object *p_object, const PropertyInfo &p_property,
+		const String &p_target_path, HashMap<ObjectID, Array> &r_results) {
+	// Use r_valid to check if property access is safe
+	bool valid = false;
+	Variant value = p_object->get(p_property.name, &valid);
+
+	// Skip properties that can't be safely accessed
+	if (!valid) {
+		return;
+	}
+
+	if (_check_variant_for_resource_path(value, p_target_path)) {
+		ObjectID oid = p_object->get_instance_id();
+		if (!r_results.has(oid)) {
+			r_results[oid] = Array();
+		}
+		r_results[oid].push_back(p_property.name);
+	}
+}
+
+Array ResourceLoader::find_referer(const String &p_path) {
+	// 1. Validate and normalize path
+	String local_path = ::ResourceLoader::_validate_local_path(p_path);
+
+	// 2. Check if resource is cached
+	if (!ResourceCache::has(local_path)) {
+		return Array(); // Not in cache, no references possible
+	}
+
+	// 3. Collect all ObjectIDs (thread-safe, while ObjectDB is locked)
+	LocalVector<Pair<ObjectID, StringName>> object_ids;
+	object_ids.reserve(ObjectDB::get_object_count());
+
+	ObjectDB::debug_objects(
+			[](Object *p_obj, void *p_user_data) {
+				LocalVector<Pair<ObjectID, StringName>> *ids_ptr =
+						(LocalVector<Pair<ObjectID, StringName>> *)p_user_data;
+				ids_ptr->push_back(
+						Pair<ObjectID, StringName>(p_obj->get_instance_id(), p_obj->get_class_name()));
+			},
+			(void *)&object_ids);
+
+	// 4. Process objects (after ObjectDB is unlocked)
+	HashMap<ObjectID, Array> results_map;
+
+	for (const Pair<ObjectID, StringName> &pair : object_ids) {
+		Object *obj = ObjectDB::get_instance(pair.first);
+		if (!obj) {
+			continue; // Object was deleted
+		}
+
+		// Skip editor-only objects to avoid accessing properties with unsafe getters
+		String class_name = obj->get_class_name();
+		if (class_name.begins_with("Editor")) {
+			continue;
+		}
+
+		// Get all properties
+		List<PropertyInfo> plist;
+		obj->get_property_list(&plist);
+
+		// Check each storable property
+		for (const PropertyInfo &prop : plist) {
+			if (!(prop.usage & PROPERTY_USAGE_STORAGE)) {
+				continue;
+			}
+
+			// Only check properties that could potentially hold resource references
+			// Skip properties that can't contain objects (basic types like int, float, string, etc.)
+			if (prop.type != Variant::OBJECT && prop.type != Variant::ARRAY &&
+					prop.type != Variant::DICTIONARY && prop.type != Variant::NIL) {
+				continue;
+			}
+
+			_check_property_for_resource(obj, prop, local_path, results_map);
+		}
+	}
+
+	// 5. Format results as Array of Dictionaries
+	Array result;
+	for (const KeyValue<ObjectID, Array> &kv : results_map) {
+		Object *obj = ObjectDB::get_instance(kv.key);
+		if (!obj) {
+			continue; // Object was deleted during processing
+		}
+
+		Dictionary entry;
+		entry["object"] = obj;
+		entry["object_id"] = kv.key;
+		entry["class_name"] = obj->get_class_name();
+		entry["properties"] = kv.value;
+
+		result.push_back(entry);
+	}
+
+	return result;
+}
+
 void ResourceLoader::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_threaded_request", "path", "type_hint", "use_sub_threads", "cache_mode"), &ResourceLoader::load_threaded_request, DEFVAL(""), DEFVAL(false), DEFVAL(CACHE_MODE_REUSE));
 	ClassDB::bind_method(D_METHOD("load_threaded_get_status", "path", "progress"), &ResourceLoader::load_threaded_get_status, DEFVAL_ARRAY);
@@ -168,6 +300,7 @@ void ResourceLoader::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resource_uid", "path"), &ResourceLoader::get_resource_uid);
 	ClassDB::bind_method(D_METHOD("list_directory", "directory_path"), &ResourceLoader::list_directory);
 	ClassDB::bind_method(D_METHOD("list_resources"), &ResourceLoader::list_resources);
+	ClassDB::bind_method(D_METHOD("find_referer", "path"), &ResourceLoader::find_referer);
 
 	BIND_ENUM_CONSTANT(THREAD_LOAD_INVALID_RESOURCE);
 	BIND_ENUM_CONSTANT(THREAD_LOAD_IN_PROGRESS);

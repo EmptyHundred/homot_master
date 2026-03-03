@@ -14,7 +14,7 @@
   - 添加 `sandbox/sandbox_error.h/.cpp`：实现 `HMSandboxErrorEntry` 与 `HMSandboxErrorRegistry`，用于：
     - 结构化记录错误（类型、严重度、位置、堆栈、上下文、阶段、次数）。
     - 导出错误数组与 Markdown 报告。
-  - 添加 `sandbox/sandbox_runtime.h/.cpp`：实现 `HMSandboxRuntime`，用于：
+  - 添加 `sandbox/sandbox_runtime.h/.cpp`：实现 `HMSandbox`，用于：
     - 聚合配置、限流与错误仓库。
     - 提供受控的脚本函数调用入口 `call_script_function`，在调用前后检查超时与内存，并记录错误。
 
@@ -28,8 +28,8 @@
     - 在 `GDScriptLanguage::frame()` 末尾调用已注册的 `sandbox_frame_callback`（如不为 `nullptr`），用于让外部模块（例如 HMScript 沙盒）在每帧执行限流重置等逻辑。
     - 说明：此改动为可选 hook，对普通 GDScript 行为无影响，如未注册回调则不执行任何额外逻辑。
   - 修改 `modules/hmscript/hmscript_language.h/.cpp`：
-    - 前向声明 `hmsandbox::HMSandboxRuntime` 并新增 `static HMSandboxRuntime *HMScriptLanguage::get_sandbox_runtime()` 便于其他模块访问 HMSandbox 全局运行时。
-    - 在 `hmscript_language.cpp` 中包含 `sandbox/sandbox_runtime.h`，创建全局 `HMSandboxRuntime g_hm_sandbox_runtime`。
+    - 前向声明 `hmsandbox::HMSandbox` 并新增 `static HMSandbox *HMScriptLanguage::get_sandbox_runtime()` 便于其他模块访问 HMSandbox 全局运行时。
+    - 在 `hmscript_language.cpp` 中包含 `sandbox/sandbox_runtime.h`，创建全局 `HMSandbox g_hm_sandbox_runtime`。
     - 实现 `_hm_sandbox_frame_callback()`，每帧调用 `g_hm_sandbox_runtime.reset_frame_counters()`。
     - 在 `HMScriptLanguage::init()` 中，若 `GDScriptLanguage::get_singleton()` 存在，则调用其 `set_sandbox_frame_callback()` 注册上述帧回调。
     - 说明：当前阶段仅接通“每帧重置”路径，后续可在此基础上进一步扩展更细粒度的沙盒管控（如 API 级限流与错误收集）。

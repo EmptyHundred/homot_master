@@ -86,7 +86,14 @@ public:
 	Vector<String> list_directory(const String &p_directory);
 
 	Dictionary list_resources();
+	Array find_referer(const String &p_path);
 
+private:
+	bool _check_variant_for_resource_path(const Variant &p_variant, const String &p_target_path);
+	void _check_property_for_resource(Object *p_object, const PropertyInfo &p_property,
+			const String &p_target_path, HashMap<ObjectID, Array> &r_results);
+
+public:
 	ResourceLoader() { singleton = this; }
 };
 

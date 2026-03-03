@@ -1,21 +1,23 @@
 #include "hmscript_language.h"
 
-#include "sandbox/sandbox_runtime.h"
+#include "sandbox/sandbox_manager.h"
+
+namespace hmsandbox {
+// 全局 HMSandbox 管理器实例，在 register_types.cpp 中创建。
+extern HMSandboxManager *hm_sandbox_manager;
+}
 
 using namespace hmsandbox;
 
-// 全局 HMSandbox 运行时实例，在 register_types.cpp 中创建。
-extern HMSandboxRuntime *hm_sandbox_runtime;
-
 static void _hm_sandbox_frame_callback() {
-	// 每帧重置写入/重操作配额等。
-	if (hm_sandbox_runtime) {
-		hm_sandbox_runtime->reset_frame_counters();
+	// 每帧重置所有活跃沙盒的配额等。
+	if (hm_sandbox_manager) {
+		hm_sandbox_manager->frame_callback();
 	}
 }
 
-HMSandboxRuntime *HMScriptLanguage::get_sandbox_runtime() {
-	return hm_sandbox_runtime;
+HMSandboxManager *HMScriptLanguage::get_sandbox_manager() {
+	return hm_sandbox_manager;
 }
 
 String HMScriptLanguage::get_name() const {

@@ -3,51 +3,155 @@
 /**************************************************************************/
 
 #include "sandbox_runtime.h"
+#include "sandbox_manager.h"
 
+#include "core/crypto/crypto.h"
+#include "core/io/dir_access.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_uid.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
+#include "modules/gdscript/gdscript_cache.h"
+#include "scene/main/node.h"
+#include "scene/resources/packed_scene.h"
 
 namespace hmsandbox {
 
-void HMSandboxRuntime::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_timeout_ms", "ms"), &HMSandboxRuntime::set_timeout_ms);
-	ClassDB::bind_method(D_METHOD("set_memory_limit_mb", "mb"), &HMSandboxRuntime::set_memory_limit_mb);
-	ClassDB::bind_method(D_METHOD("set_write_ops_per_frame", "count"), &HMSandboxRuntime::set_write_ops_per_frame);
-	ClassDB::bind_method(D_METHOD("set_heavy_ops_per_frame", "count"), &HMSandboxRuntime::set_heavy_ops_per_frame);
-	ClassDB::bind_method(D_METHOD("reset_frame_counters"), &HMSandboxRuntime::reset_frame_counters);
+// Forward declaration of external manager
+extern HMSandboxManager *hm_sandbox_manager;
 
-	ClassDB::bind_method(D_METHOD("load_sandbox", "directory", "tscn_filename"), &HMSandboxRuntime::load_sandbox);
+void HMSandbox::_bind_methods() {
+	ClassDB::bind_static_method("HMSandbox", D_METHOD("load", "directory", "tscn_filename"), &HMSandbox::load);
 
-	ClassDB::bind_method(D_METHOD("get_last_error"), &HMSandboxRuntime::get_last_error);
-	ClassDB::bind_method(D_METHOD("get_all_errors"), &HMSandboxRuntime::get_all_errors);
-	ClassDB::bind_method(D_METHOD("get_error_report_markdown"), &HMSandboxRuntime::get_error_report_markdown);
+	ClassDB::bind_method(D_METHOD("get_profile_id"), &HMSandbox::get_profile_id);
+
+	ClassDB::bind_method(D_METHOD("get_packed_scene"), &HMSandbox::get_packed_scene);
+
+	ClassDB::bind_method(D_METHOD("get_root_node"), &HMSandbox::get_root_node);
+
+	ClassDB::bind_method(D_METHOD("get_load_directory"), &HMSandbox::get_load_directory);
+
+	ClassDB::bind_method(D_METHOD("get_scene_filename"), &HMSandbox::get_scene_filename);
+
+	ClassDB::bind_method(D_METHOD("set_timeout_ms", "ms"), &HMSandbox::set_timeout_ms);
+	ClassDB::bind_method(D_METHOD("set_memory_limit_mb", "mb"), &HMSandbox::set_memory_limit_mb);
+	ClassDB::bind_method(D_METHOD("set_write_ops_per_frame", "count"), &HMSandbox::set_write_ops_per_frame);
+	ClassDB::bind_method(D_METHOD("set_heavy_ops_per_frame", "count"), &HMSandbox::set_heavy_ops_per_frame);
+	ClassDB::bind_method(D_METHOD("reset_frame_counters"), &HMSandbox::reset_frame_counters);
+
+	ClassDB::bind_method(D_METHOD("get_last_error"), &HMSandbox::get_last_error);
+	ClassDB::bind_method(D_METHOD("get_all_errors"), &HMSandbox::get_all_errors);
+	ClassDB::bind_method(D_METHOD("get_error_report_markdown"), &HMSandbox::get_error_report_markdown);
+
+	ClassDB::bind_method(D_METHOD("set_dependencies", "dependencies"), &HMSandbox::set_dependencies);
+	ClassDB::bind_method(D_METHOD("get_dependencies"), &HMSandbox::get_dependencies);
+
+	ClassDB::bind_method(D_METHOD("unload"), &HMSandbox::unload);
+
+	ClassDB::bind_static_method("HMSandbox", D_METHOD("collect_dependencies", "directory"), &HMSandbox::collect_dependencies);
 }
 
-HMSandboxRuntime::HMSandboxRuntime() {
+void HMSandbox::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_PREDELETE: {
+			// Unregister from manager when being deleted
+			if (hm_sandbox_manager) {
+				hm_sandbox_manager->unregister_sandbox(this);
+			}
+		} break;
+	}
 }
 
-void HMSandboxRuntime::set_timeout_ms(int p_ms) {
+HMSandbox::HMSandbox() {
+}
+
+HMSandbox::~HMSandbox() {
+	// Node destructor will handle cleanup of children
+}
+
+void HMSandbox::set_profile_id(const String &p_id) {
+	profile_id = p_id;
+}
+
+String HMSandbox::get_profile_id() const {
+	return profile_id;
+}
+
+void HMSandbox::set_packed_scene(const Ref<PackedScene> &p_scene) {
+	packed_scene = p_scene;
+}
+
+Ref<PackedScene> HMSandbox::get_packed_scene() const {
+	return packed_scene;
+}
+
+void HMSandbox::set_root_node(Node *p_node) {
+	// Remove all current children
+	while (get_child_count() > 0) {
+		Node *child = get_child(0);
+		remove_child(child);
+		if (child->is_inside_tree()) {
+			child->queue_free();
+		} else {
+			memdelete(child);
+		}
+	}
+
+	// Add the new node as a child if not null
+	if (p_node) {
+		add_child(p_node);
+	}
+}
+
+Node *HMSandbox::get_root_node() const {
+	return get_child_count() > 0 ? get_child(0) : nullptr;
+}
+
+void HMSandbox::set_load_directory(const String &p_directory) {
+	load_directory = p_directory;
+}
+
+String HMSandbox::get_load_directory() const {
+	return load_directory;
+}
+
+void HMSandbox::set_scene_filename(const String &p_filename) {
+	scene_filename = p_filename;
+}
+
+String HMSandbox::get_scene_filename() const {
+	return scene_filename;
+}
+
+void HMSandbox::set_dependencies(const PackedStringArray &p_dependencies) {
+	dependencies = p_dependencies;
+}
+
+PackedStringArray HMSandbox::get_dependencies() const {
+	return dependencies;
+}
+
+void HMSandbox::set_timeout_ms(int p_ms) {
 	limiter.set_timeout_ms(p_ms);
 }
 
-void HMSandboxRuntime::set_memory_limit_mb(int p_mb) {
+void HMSandbox::set_memory_limit_mb(int p_mb) {
 	limiter.set_memory_limit_mb(p_mb);
 }
 
-void HMSandboxRuntime::set_write_ops_per_frame(int p_count) {
+void HMSandbox::set_write_ops_per_frame(int p_count) {
 	limiter.set_write_ops_per_frame(p_count);
 }
 
-void HMSandboxRuntime::set_heavy_ops_per_frame(int p_count) {
+void HMSandbox::set_heavy_ops_per_frame(int p_count) {
 	limiter.set_heavy_ops_per_frame(p_count);
 }
 
-void HMSandboxRuntime::reset_frame_counters() {
+void HMSandbox::reset_frame_counters() {
 	limiter.reset_frame_counters();
 }
 
-Variant HMSandboxRuntime::call_script_function(const Ref<Script> &p_script,
+Variant HMSandbox::call_script_function(const Ref<Script> &p_script,
 		Object *p_owner,
 		const StringName &p_method,
 		const Array &p_args,
@@ -109,27 +213,7 @@ Variant HMSandboxRuntime::call_script_function(const Ref<Script> &p_script,
 	return ret;
 }
 
-Ref<Resource> HMSandboxRuntime::load_sandbox(const String &p_directory, const String &p_tscn_filename) {
-	// Construct the full path by combining directory and filename
-	String full_path = p_directory;
-	if (!full_path.is_empty() && !full_path.ends_with("/")) {
-		full_path += "/";
-	}
-	full_path += p_tscn_filename;
-
-	// Load the resource using ResourceLoader without cache
-	Error err = OK;
-	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
-
-	if (err != OK || resource.is_null()) {
-		add_error("resource_load", "Failed to load resource: " + full_path);
-		return Ref<Resource>();
-	}
-
-	return resource;
-}
-
-void HMSandboxRuntime::add_error(const String &p_type,
+void HMSandbox::add_error(const String &p_type,
 		const String &p_message,
 		const String &p_file,
 		int p_line,
@@ -139,6 +223,152 @@ void HMSandboxRuntime::add_error(const String &p_type,
 		const String &p_trigger_context,
 		const String &p_phase) {
 	errors.add_error(p_type, p_message, p_file, p_line, p_column, p_stack_trace, p_severity, p_trigger_context, p_phase);
+}
+
+void HMSandbox::unload() {
+	// Remove all children (which cleans up the root node)
+	set_root_node(nullptr);
+
+	// Clear GDScript cache for PackedScene dependencies
+	if (packed_scene.is_valid()) {
+		// Get all resolved dependencies
+		PackedStringArray deps = get_dependencies();
+
+		// Clear GDScript cache for each HMScript dependency
+		for (int i = 0; i < deps.size(); i++) {
+			String actual_path = deps[i];
+
+			if (actual_path.ends_with(".hm") || actual_path.ends_with(".hmc")) {
+				// Remove script from GDScript cache
+				GDScriptCache::remove_script(actual_path);
+			}
+		}
+
+		// Clear the PackedScene reference
+		set_packed_scene(Ref<PackedScene>());
+	}
+}
+
+PackedStringArray HMSandbox::collect_dependencies(const String &p_directory) {
+	PackedStringArray result;
+
+	// Open the directory
+	Ref<DirAccess> dir = DirAccess::open(p_directory);
+	if (dir.is_null()) {
+		ERR_PRINT("Failed to open directory: " + p_directory);
+		return result;
+	}
+
+	// List all files and directories
+	dir->list_dir_begin();
+	String file_name = dir->get_next();
+
+	while (!file_name.is_empty()) {
+		// Skip hidden files and special directories
+		if (file_name.begins_with(".")) {
+			file_name = dir->get_next();
+			continue;
+		}
+
+		String full_path = p_directory;
+		if (!full_path.ends_with("/")) {
+			full_path += "/";
+		}
+		full_path += file_name;
+
+		if (dir->current_is_dir()) {
+			// Recursively collect dependencies from subdirectory
+			PackedStringArray sub_deps = collect_dependencies(full_path);
+			for (int i = 0; i < sub_deps.size(); i++) {
+				result.push_back(sub_deps[i]);
+			}
+		} else {
+			// Check if file has .hm or .hmc extension
+			if (file_name.ends_with(".hm") || file_name.ends_with(".hmc")) {
+				result.push_back(full_path);
+			}
+		}
+
+		file_name = dir->get_next();
+	}
+
+	dir->list_dir_end();
+	return result;
+}
+
+String HMSandbox::generate_uuid() {
+	// Generate a short UUID (8 hex characters)
+	Ref<Crypto> crypto = Crypto::create();
+	if (crypto.is_null()) {
+		// Fallback if crypto is unavailable
+		uint64_t ticks = OS::get_singleton()->get_ticks_usec();
+		return String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+	}
+
+	PackedByteArray bytes = crypto->generate_random_bytes(4);
+	if (bytes.size() != 4) {
+		// Fallback if random generation fails
+		uint64_t ticks = OS::get_singleton()->get_ticks_usec();
+		return String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+	}
+
+	// Format as 8-character hex string
+	String result;
+	for (int i = 0; i < 4; i++) {
+		result += String::num_int64(bytes[i], 16).pad_zeros(2);
+	}
+	return result;
+}
+
+HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filename) {
+	// Construct the full path
+	String full_path = p_directory;
+	if (!full_path.is_empty() && !full_path.ends_with("/")) {
+		full_path += "/";
+	}
+	full_path += p_tscn_filename;
+
+	// Load the resource without cache
+	Error err = OK;
+	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+
+	if (err != OK || resource.is_null()) {
+		ERR_FAIL_V_MSG(nullptr, "Failed to load resource: " + full_path);
+	}
+
+	// Cast to PackedScene
+	Ref<PackedScene> scene = resource;
+	if (scene.is_null()) {
+		ERR_FAIL_V_MSG(nullptr, "Resource is not a PackedScene: " + full_path);
+	}
+
+	// Instantiate the scene to a node
+	Node *instance = scene->instantiate();
+	if (!instance) {
+		ERR_FAIL_V_MSG(nullptr, "Failed to instantiate PackedScene: " + full_path);
+	}
+
+	// Create a new sandbox runtime with unique profile_id
+	HMSandbox *sandbox = memnew(HMSandbox);
+	String profile_id = "Sandbox_" + generate_uuid();
+	sandbox->set_profile_id(profile_id);
+	sandbox->set_name(profile_id);
+
+	sandbox->set_packed_scene(scene);
+	sandbox->set_root_node(instance);
+	sandbox->set_load_directory(p_directory);
+	sandbox->set_scene_filename(p_tscn_filename);
+
+	// Collect all .hm and .hmc dependencies from the directory
+	PackedStringArray deps = collect_dependencies(p_directory);
+	sandbox->set_dependencies(deps);
+
+	// Register for frame callbacks if manager is available
+	if (hm_sandbox_manager) {
+		hm_sandbox_manager->register_sandbox(sandbox);
+	}
+
+	return sandbox;
 }
 
 } // namespace hmsandbox
