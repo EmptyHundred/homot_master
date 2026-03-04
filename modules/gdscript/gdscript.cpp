@@ -1092,6 +1092,9 @@ void GDScript::_get_property_list(List<PropertyInfo> *p_properties) const {
 
 void GDScript::_bind_methods() {
 	ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "new", &GDScript::_new, MethodInfo("new"));
+
+	ClassDB::bind_method(D_METHOD("is_sandbox_enabled"), &GDScript::is_sandbox_enabled);
+	ClassDB::bind_method(D_METHOD("get_sandbox_profile_id"), &GDScript::get_sandbox_profile_id);
 }
 
 void GDScript::set_path_cache(const String &p_path) {

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(ls -1 test_block_*.hm)",
       "Bash(xargs grep -l \"resource_format.*tscn\\\\|tscn.*loader\")",
-      "Bash(xargs grep -l \"^class ObjectDB\")"
+      "Bash(xargs grep -l \"^class ObjectDB\")",
+      "Bash(grep -r \"sandbox_profile_id\\\\|sandbox_enabled\\\\|set_sandbox\" /d/homot/modules/gdscript/*.h)"
     ]
   }
 }

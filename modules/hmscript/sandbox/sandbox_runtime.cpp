@@ -4,13 +4,16 @@
 
 #include "sandbox_runtime.h"
 #include "sandbox_manager.h"
+#include "sandbox_profile.h"
 
 #include "core/crypto/crypto.h"
 #include "core/io/dir_access.h"
+#include "core/io/resource.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_uid.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
+#include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_cache.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
@@ -19,6 +22,11 @@ namespace hmsandbox {
 
 // Forward declaration of external manager
 extern HMSandboxManager *hm_sandbox_manager;
+
+// Static dummy instances for error cases
+HMSandboxConfig HMSandbox::dummy_config;
+HMSandboxLimiter HMSandbox::dummy_limiter;
+HMSandboxErrorRegistry HMSandbox::dummy_errors;
 
 void HMSandbox::_bind_methods() {
 	ClassDB::bind_static_method("HMSandbox", D_METHOD("load", "directory", "tscn_filename"), &HMSandbox::load);
@@ -43,7 +51,6 @@ void HMSandbox::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_all_errors"), &HMSandbox::get_all_errors);
 	ClassDB::bind_method(D_METHOD("get_error_report_markdown"), &HMSandbox::get_error_report_markdown);
 
-	ClassDB::bind_method(D_METHOD("set_dependencies", "dependencies"), &HMSandbox::set_dependencies);
 	ClassDB::bind_method(D_METHOD("get_dependencies"), &HMSandbox::get_dependencies);
 
 	ClassDB::bind_method(D_METHOD("unload"), &HMSandbox::unload);
@@ -67,6 +74,10 @@ HMSandbox::HMSandbox() {
 
 HMSandbox::~HMSandbox() {
 	// Node destructor will handle cleanup of children
+}
+
+void HMSandbox::set_profile(SandboxProfile *p_profile) {
+	profile = p_profile;
 }
 
 void HMSandbox::set_profile_id(const String &p_id) {
@@ -131,24 +142,54 @@ PackedStringArray HMSandbox::get_dependencies() const {
 	return dependencies;
 }
 
+HMSandboxConfig &HMSandbox::get_config() {
+	ERR_FAIL_NULL_V(profile, dummy_config);
+	return profile->config;
+}
+
+const HMSandboxConfig &HMSandbox::get_config() const {
+	ERR_FAIL_NULL_V(profile, dummy_config);
+	return profile->config;
+}
+
+HMSandboxLimiter &HMSandbox::get_limiter() {
+	ERR_FAIL_NULL_V(profile, dummy_limiter);
+	return profile->limiter;
+}
+
+const HMSandboxLimiter &HMSandbox::get_limiter() const {
+	ERR_FAIL_NULL_V(profile, dummy_limiter);
+	return profile->limiter;
+}
+
+HMSandboxErrorRegistry &HMSandbox::get_error_registry() {
+	ERR_FAIL_NULL_V(profile, dummy_errors);
+	return profile->errors;
+}
+
+const HMSandboxErrorRegistry &HMSandbox::get_error_registry() const {
+	ERR_FAIL_NULL_V(profile, dummy_errors);
+	return profile->errors;
+}
+
 void HMSandbox::set_timeout_ms(int p_ms) {
-	limiter.set_timeout_ms(p_ms);
+	get_limiter().set_timeout_ms(p_ms);
 }
 
 void HMSandbox::set_memory_limit_mb(int p_mb) {
-	limiter.set_memory_limit_mb(p_mb);
+	get_limiter().set_memory_limit_mb(p_mb);
 }
 
 void HMSandbox::set_write_ops_per_frame(int p_count) {
-	limiter.set_write_ops_per_frame(p_count);
+	get_limiter().set_write_ops_per_frame(p_count);
 }
 
 void HMSandbox::set_heavy_ops_per_frame(int p_count) {
-	limiter.set_heavy_ops_per_frame(p_count);
+	get_limiter().set_heavy_ops_per_frame(p_count);
 }
 
 void HMSandbox::reset_frame_counters() {
-	limiter.reset_frame_counters();
+	get_limiter().reset_frame_counters();
 }
 
 Variant HMSandbox::call_script_function(const Ref<Script> &p_script,
@@ -164,19 +205,19 @@ Variant HMSandbox::call_script_function(const Ref<Script> &p_script,
 		return Variant();
 	}
 
-	if (limiter.is_timeout_exceeded()) {
+	if (get_limiter().is_timeout_exceeded()) {
 		r_error = "Sandbox timeout exceeded before call.";
 		add_error("timeout", r_error);
 		return Variant();
 	}
 
-	if (limiter.is_memory_limit_exceeded()) {
+	if (get_limiter().is_memory_limit_exceeded()) {
 		r_error = "Sandbox memory limit exceeded before call.";
 		add_error("memory", r_error);
 		return Variant();
 	}
 
-	limiter.begin_execution();
+	get_limiter().begin_execution();
 
 	const int argc = p_args.size();
 	Vector<const Variant *> arg_ptrs;
@@ -189,15 +230,15 @@ Variant HMSandbox::call_script_function(const Ref<Script> &p_script,
 	const Variant **arg_array = (argc > 0) ? const_cast<const Variant **>(arg_ptrs.ptr()) : nullptr;
 	Variant ret = p_owner->callp(p_method, arg_array, argc, ce);
 
-	limiter.end_execution();
+	get_limiter().end_execution();
 
-	if (limiter.is_timeout_exceeded()) {
+	if (get_limiter().is_timeout_exceeded()) {
 		r_error = "Sandbox timeout exceeded during call.";
 		add_error("timeout", r_error);
 		return Variant();
 	}
 
-	if (limiter.is_memory_limit_exceeded()) {
+	if (get_limiter().is_memory_limit_exceeded()) {
 		r_error = "Sandbox memory limit exceeded during call.";
 		add_error("memory", r_error);
 		return Variant();
@@ -222,7 +263,19 @@ void HMSandbox::add_error(const String &p_type,
 		const String &p_severity,
 		const String &p_trigger_context,
 		const String &p_phase) {
-	errors.add_error(p_type, p_message, p_file, p_line, p_column, p_stack_trace, p_severity, p_trigger_context, p_phase);
+	get_error_registry().add_error(p_type, p_message, p_file, p_line, p_column, p_stack_trace, p_severity, p_trigger_context, p_phase);
+}
+
+String HMSandbox::get_last_error() const {
+	return get_error_registry().get_last_error();
+}
+
+Array HMSandbox::get_all_errors() const {
+	return get_error_registry().get_all_errors();
+}
+
+String HMSandbox::get_error_report_markdown() const {
+	return get_error_registry().get_error_report_markdown();
 }
 
 void HMSandbox::unload() {
@@ -333,13 +386,49 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
 
 	if (err != OK || resource.is_null()) {
-		ERR_FAIL_V_MSG(nullptr, "Failed to load resource: " + full_path);
+		ERR_FAIL_V_MSG(nullptr, "Failed to load Resource: " + full_path);
 	}
-
 	// Cast to PackedScene
 	Ref<PackedScene> scene = resource;
 	if (scene.is_null()) {
 		ERR_FAIL_V_MSG(nullptr, "Resource is not a PackedScene: " + full_path);
+	}
+
+	// Constructing Sandbox
+	String profile_id = "Sandbox_" + generate_uuid();
+	// Collect all .hm and .hmc dependencies from the directory
+	PackedStringArray deps = collect_dependencies(p_directory);
+
+	// Update all loaded .hm/.hmc scripts to use this sandbox's unique profile_id
+	// This must happen after PackedScene is loaded (which loads all dependencies)
+	// but before scene instantiation (which creates GDScriptInstances)
+	for (int i = 0; i < deps.size(); i++) {
+		const String &script_path = deps[i];
+
+		// Try to get the already-loaded script from ResourceCache
+		Ref<Resource> res = ResourceCache::get_ref(script_path);
+		if (res.is_null()) {
+			// Script not in cache yet, it will be loaded later
+			continue;
+		}
+
+		// Cast to GDScript
+		Ref<GDScript> gds = res;
+		if (gds.is_null()) {
+			// Not a GDScript resource
+			continue;
+		}
+
+		// Update the script's sandbox profile_id from "hm_default" to this sandbox's unique ID
+		gds->set_sandbox_enabled(true, profile_id);
+	}
+
+	// Ensure the GDScriptLanguage has a sandbox profile created for this ID
+	// This will be used when the script instances execute
+	GDScriptLanguage *lang = GDScriptLanguage::get_singleton();
+	SandboxProfile *profile_ptr = nullptr;
+	if (lang) {
+		profile_ptr = lang->ensure_sandbox_profile(profile_id);
 	}
 
 	// Instantiate the scene to a node
@@ -350,17 +439,16 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 
 	// Create a new sandbox runtime with unique profile_id
 	HMSandbox *sandbox = memnew(HMSandbox);
-	String profile_id = "Sandbox_" + generate_uuid();
+
 	sandbox->set_profile_id(profile_id);
 	sandbox->set_name(profile_id);
+	sandbox->set_profile(profile_ptr);
 
 	sandbox->set_packed_scene(scene);
 	sandbox->set_root_node(instance);
 	sandbox->set_load_directory(p_directory);
 	sandbox->set_scene_filename(p_tscn_filename);
 
-	// Collect all .hm and .hmc dependencies from the directory
-	PackedStringArray deps = collect_dependencies(p_directory);
 	sandbox->set_dependencies(deps);
 
 	// Register for frame callbacks if manager is available

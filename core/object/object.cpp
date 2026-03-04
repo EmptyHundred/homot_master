@@ -1112,6 +1112,14 @@ Variant Object::get_script() const {
 	return script_instance ? Variant(script_instance->get_script()) : Variant();
 }
 
+bool Object::is_script_instance_sandbox_enabled() const {
+	return script_instance ? script_instance->is_sandbox_enabled() : false;
+}
+
+String Object::get_script_instance_sandbox_profile_id() const {
+	return script_instance ? script_instance->get_sandbox_profile_id() : String();
+}
+
 bool Object::has_meta(const StringName &p_name) const {
 	return metadata.has(p_name);
 }
@@ -1933,6 +1941,9 @@ void Object::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_script", "script"), &Object::set_script);
 	ClassDB::bind_method(D_METHOD("get_script"), &Object::get_script);
+
+	ClassDB::bind_method(D_METHOD("is_script_instance_sandbox_enabled"), &Object::is_script_instance_sandbox_enabled);
+	ClassDB::bind_method(D_METHOD("get_script_instance_sandbox_profile_id"), &Object::get_script_instance_sandbox_profile_id);
 
 	ClassDB::bind_method(D_METHOD("set_meta", "name", "value"), &Object::set_meta);
 	ClassDB::bind_method(D_METHOD("remove_meta", "name"), &Object::remove_meta);

@@ -42,9 +42,7 @@
 
 // Reuse HMScript sandbox utilities to provide security and rate limiting
 // facilities to GDScript without复制一整套实现。
-#include "modules/hmscript/sandbox/sandbox_config.h"
-#include "modules/hmscript/sandbox/sandbox_error.h"
-#include "modules/hmscript/sandbox/sandbox_limiter.h"
+#include "modules/hmscript/sandbox/sandbox_profile.h"
 
 class GDScriptNativeClass : public RefCounted {
 	GDCLASS(GDScriptNativeClass, RefCounted);
@@ -425,8 +423,9 @@ public:
 	~GDScriptInstance();
 
 	// 沙盒辅助查询接口，供 VM 等非友元代码使用。
-	bool is_sandbox_enabled() const { return sandbox_enabled; }
-	const String &get_sandbox_profile_id() const { return sandbox_profile_id; }
+	// Override ScriptInstance virtual methods to expose to GDScript
+	virtual bool is_sandbox_enabled() const override { return sandbox_enabled; }
+	virtual String get_sandbox_profile_id() const override { return sandbox_profile_id; }
 };
 
 class GDScriptLanguage : public ScriptLanguage {
@@ -498,11 +497,7 @@ class GDScriptLanguage : public ScriptLanguage {
 public:
 	// 简单的 GDScript 沙盒 profile：直接复用 HMScript 的配置、限流与错误聚合实现，
 	// 由上层（如 HMScript 或未来的 GDScript 沙盒管理器）按需创建与使用。
-	struct SandboxProfile {
-		hmsandbox::HMSandboxConfig config;
-		hmsandbox::HMSandboxLimiter limiter;
-		hmsandbox::HMSandboxErrorRegistry errors;
-	};
+	using SandboxProfile = hmsandbox::SandboxProfile;
 
 private:
 	HashMap<String, SandboxProfile> sandbox_profiles;

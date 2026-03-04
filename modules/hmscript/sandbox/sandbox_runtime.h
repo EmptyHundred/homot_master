@@ -20,6 +20,7 @@ class PackedScene;
 namespace hmsandbox {
 
 class HMSandboxManager;
+struct SandboxProfile; // Forward declaration
 
 // 轻量运行时聚合器，将配置、限流和错误仓库组合在一起。
 // 不直接修改 GDScript 内部，只作为 HMScript 等上层入口的工具类。
@@ -50,14 +51,15 @@ public:
 	void set_scene_filename(const String &p_filename);
 	String get_scene_filename() const;
 
-	HMSandboxConfig &get_config() { return config; }
-	const HMSandboxConfig &get_config() const { return config; }
+	// Wrapper accessors - lookup GDScriptLanguage profile by profile_id
+	HMSandboxConfig &get_config();
+	const HMSandboxConfig &get_config() const;
 
-	HMSandboxLimiter &get_limiter() { return limiter; }
-	const HMSandboxLimiter &get_limiter() const { return limiter; }
+	HMSandboxLimiter &get_limiter();
+	const HMSandboxLimiter &get_limiter() const;
 
-	HMSandboxErrorRegistry &get_error_registry() { return errors; }
-	const HMSandboxErrorRegistry &get_error_registry() const { return errors; }
+	HMSandboxErrorRegistry &get_error_registry();
+	const HMSandboxErrorRegistry &get_error_registry() const;
 
 	void set_timeout_ms(int p_ms);
 	void set_memory_limit_mb(int p_mb);
@@ -84,9 +86,9 @@ public:
 			const String &p_trigger_context = "",
 			const String &p_phase = "");
 
-	String get_last_error() const { return errors.get_last_error(); }
-	Array get_all_errors() const { return errors.get_all_errors(); }
-	String get_error_report_markdown() const { return errors.get_error_report_markdown(); }
+	String get_last_error() const;
+	Array get_all_errors() const;
+	String get_error_report_markdown() const;
 
 	void set_dependencies(const PackedStringArray &p_dependencies);
 	PackedStringArray get_dependencies() const;
@@ -112,9 +114,16 @@ private:
 
 	PackedStringArray dependencies; // All .hm and .hmc file paths found in the sandbox directory
 
-	HMSandboxConfig config;
-	HMSandboxLimiter limiter;
-	HMSandboxErrorRegistry errors;
+	// Direct pointer to the GDScriptLanguage profile
+	SandboxProfile *profile = nullptr;
+
+	// Static dummy instances for error cases (when profile lookup fails)
+	static HMSandboxConfig dummy_config;
+	static HMSandboxLimiter dummy_limiter;
+	static HMSandboxErrorRegistry dummy_errors;
+
+	// Set the profile pointer directly
+	void set_profile(SandboxProfile *p_profile);
 
 	friend class HMSandboxManager;
 };

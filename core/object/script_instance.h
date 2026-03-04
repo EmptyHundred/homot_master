@@ -93,5 +93,10 @@ public:
 	virtual const Variant get_rpc_config() const;
 
 	virtual ScriptLanguage *get_language() = 0;
+
+	// Sandbox query methods (GDScript sandbox support)
+	virtual bool is_sandbox_enabled() const { return false; }
+	virtual String get_sandbox_profile_id() const { return String(); }
+
 	virtual ~ScriptInstance() {}
 };
