@@ -18,6 +18,7 @@ void HMSandboxManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_sandbox", "directory", "tscn_filename"), &HMSandboxManager::load_sandbox);
 	ClassDB::bind_method(D_METHOD("register_sandbox", "sandbox"), &HMSandboxManager::register_sandbox);
 	ClassDB::bind_method(D_METHOD("unregister_sandbox", "sandbox"), &HMSandboxManager::unregister_sandbox);
+	ClassDB::bind_method(D_METHOD("find_sandbox_by_profile_id", "profile_id"), &HMSandboxManager::find_sandbox_by_profile_id);
 	ClassDB::bind_method(D_METHOD("remove_script_cache", "script_path"), &HMSandboxManager::remove_script_cache);
 }
 
@@ -25,7 +26,7 @@ HMSandboxManager::HMSandboxManager() {
 }
 
 HMSandboxManager::~HMSandboxManager() {
-	active_sandboxes.clear();
+	profile_to_sandbox.clear();
 }
 
 HMSandbox *HMSandboxManager::load_sandbox(const String &p_directory, const String &p_tscn_filename) {
@@ -34,17 +35,29 @@ HMSandbox *HMSandboxManager::load_sandbox(const String &p_directory, const Strin
 }
 
 void HMSandboxManager::frame_callback() {
-	for (int i = 0; i < active_sandboxes.size(); i++) {
-		if (active_sandboxes[i]) {
-			active_sandboxes[i]->reset_frame_counters();
+	for (HashMap<String, HMSandbox *>::Iterator it = profile_to_sandbox.begin(); it != profile_to_sandbox.end(); ++it) {
+		if (it->value) {
+			it->value->reset_frame_counters();
 		}
 	}
 }
 
 void HMSandboxManager::register_sandbox(HMSandbox *p_sandbox) {
-	if (p_sandbox && !active_sandboxes.has(p_sandbox)) {
-		active_sandboxes.push_back(p_sandbox);
+	if (!p_sandbox) {
+		return;
 	}
+
+	String profile_id = p_sandbox->get_profile_id();
+	if (profile_id.is_empty()) {
+		ERR_PRINT("Cannot register sandbox without a profile_id");
+		return;
+	}
+
+	if (profile_to_sandbox.has(profile_id)) {
+		WARN_PRINT(vformat("Sandbox with profile_id '%s' is already registered. Replacing.", profile_id));
+	}
+
+	profile_to_sandbox[profile_id] = p_sandbox;
 }
 
 void HMSandboxManager::unregister_sandbox(HMSandbox *p_sandbox) {
@@ -52,11 +65,38 @@ void HMSandboxManager::unregister_sandbox(HMSandbox *p_sandbox) {
 		return;
 	}
 
-	// Remove from active sandboxes list
-	active_sandboxes.erase(p_sandbox);
+	// Remove from profile_to_sandbox map
+	String profile_id = p_sandbox->get_profile_id();
+	if (!profile_id.is_empty()) {
+		profile_to_sandbox.erase(profile_id);
+	}
 
 	// Unload the sandbox (cleanup resources and clear caches)
 	p_sandbox->unload();
+}
+
+HMSandbox *HMSandboxManager::find_sandbox_by_profile_id(const String &p_profile_id) {
+	if (p_profile_id.is_empty()) {
+		return nullptr;
+	}
+
+	if (profile_to_sandbox.has(p_profile_id)) {
+		return profile_to_sandbox[p_profile_id];
+	}
+
+	return nullptr;
+}
+
+Vector<HMSandbox *> HMSandboxManager::get_all_sandboxes() const {
+	Vector<HMSandbox *> result;
+	result.resize(profile_to_sandbox.size());
+
+	int index = 0;
+	for (HashMap<String, HMSandbox *>::ConstIterator it = profile_to_sandbox.begin(); it != profile_to_sandbox.end(); ++it) {
+		result.write[index++] = it->value;
+	}
+
+	return result;
 }
 
 void HMSandboxManager::remove_script_cache(const String &p_script_path) {
