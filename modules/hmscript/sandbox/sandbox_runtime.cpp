@@ -410,12 +410,21 @@ void HMSandbox::resolve_dependencies() {
 		return;
 	}
 
-	// Collect all .hm/.hmc paths and pre-load all scripts
-	PackedStringArray paths = collect_dependencies(load_directory);
+	// Get all registered class names from class_registry (populated by register_classes())
+	PackedStringArray class_names = class_registry.get_all_class_names();
 	int loaded_count = 0;
 
-	for (int i = 0; i < paths.size(); i++) {
-		const String &script_path = paths[i];
+	// Iterate through registered classes and load their scripts
+	for (int i = 0; i < class_names.size(); i++) {
+		const String &class_name = class_names[i];
+
+		// Get the ClassInfo to retrieve script_path
+		SandboxClassRegistry::ClassInfo info = class_registry.get_class_info(class_name);
+		const String &script_path = info.script_path;
+
+		if (script_path.is_empty()) {
+			continue; // Skip if no script path
+		}
 
 		// Pre-load the script
 		Ref<GDScript> script = ResourceLoader::load(
@@ -434,10 +443,9 @@ void HMSandbox::resolve_dependencies() {
 	}
 
 	print_verbose(vformat(
-			"Sandbox dependency resolution: Loaded %d/%d scripts from '%s'",
+			"Sandbox dependency resolution: Loaded %d/%d scripts from class registry",
 			loaded_count,
-			paths.size(),
-			load_directory));
+			class_names.size()));
 }
 
 void HMSandbox::configure_script_profiles() {
@@ -496,23 +504,27 @@ String HMSandbox::generate_sandbox_id() {
 void HMSandbox::register_classes() {
 	class_registry.clear();
 
+	if (load_directory.is_empty()) {
+		WARN_PRINT("Cannot prescan classes: load_directory is empty.");
+		return;
+	}
+
 	GDScriptLanguage *lang = GDScriptLanguage::get_singleton();
 	if (!lang) {
 		ERR_PRINT("GDScriptLanguage not available for class registration.");
 		return;
 	}
 
+	// Collect all script paths without loading them
+	PackedStringArray script_paths = collect_dependencies(load_directory);
 	int registered_count = 0;
 
-	for (const KeyValue<String, Ref<GDScript>> &E : dependencies) {
-		const String &script_path = E.key;
+	// Pre-scan each script file to extract class_name
+	// This uses lightweight parsing - doesn't require full compilation
+	for (int i = 0; i < script_paths.size(); i++) {
+		const String &script_path = script_paths[i];
 
-		// Skip scripts that failed to load
-		if (E.value.is_null()) {
-			continue;
-		}
-
-		// Extract class info using GDScriptLanguage::get_global_class_name()
+		// Extract class info using get_global_class_name (lightweight scan)
 		String base_type, icon_path;
 		bool is_abstract = false, is_tool = false;
 
@@ -525,7 +537,7 @@ void HMSandbox::register_classes() {
 
 		// Only register scripts with class_name declarations
 		if (!class_name.is_empty()) {
-			// Register in sandbox-local registry
+			// Register in sandbox-local registry WITHOUT cached_script yet
 			SandboxClassRegistry::ClassInfo info;
 			info.class_name = class_name;
 			info.script_path = script_path;
@@ -533,14 +545,14 @@ void HMSandbox::register_classes() {
 			info.icon_path = icon_path;
 			info.is_abstract = is_abstract;
 			info.is_tool = is_tool;
-			info.cached_script = E.value;
+			info.cached_script = Ref<GDScript>(); // Will be populated after loading
 
 			bool registered = class_registry.register_class(info);
 
 			if (registered) {
 				registered_count++;
 				print_verbose(vformat(
-						"Sandbox '%s': Registered local class '%s' from '%s' (base: '%s')",
+						"Sandbox '%s': Pre-registered class '%s' from '%s' (base: '%s')",
 						profile_id,
 						class_name,
 						script_path,
@@ -550,10 +562,10 @@ void HMSandbox::register_classes() {
 	}
 
 	print_verbose(vformat(
-			"Sandbox '%s': Registered %d local classes from %d dependencies",
+			"Sandbox '%s': Pre-registered %d classes from %d script files",
 			profile_id,
 			registered_count,
-			dependencies.size()));
+			script_paths.size()));
 }
 
 HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filename) {
@@ -564,47 +576,67 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 	}
 	full_path += p_tscn_filename;
 
-	// Load the resource without cache
-	Error err = OK;
-	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
-
-	if (err != OK || resource.is_null()) {
-		ERR_FAIL_V_MSG(nullptr, "Failed to load Resource: " + full_path);
-	}
-	// Cast to PackedScene
-	Ref<PackedScene> scene = resource;
-	if (scene.is_null()) {
-		ERR_FAIL_V_MSG(nullptr, "Resource is not a PackedScene: " + full_path);
-	}
-
-	// Constructing Sandbox
+	// Constructing Sandbox FIRST (before loading any scripts)
 	String profile_id = generate_sandbox_id();
 
 	// Create sandbox instance early so we can populate its registry
 	HMSandbox *sandbox = memnew(HMSandbox);
-	
+
 	sandbox->set_profile_id(profile_id);
 	sandbox->set_name(profile_id);
 	sandbox->set_load_directory(p_directory);
 	sandbox->set_scene_filename(p_tscn_filename);
 
-	// Resolve all .hm and .hmc dependencies from the load directory
-	// Preload all dependencies to dependencies map
+	// Register sandbox in manager BEFORE loading any scripts
+	// This allows the GDScript analyzer to find the sandbox during script compilation
+	if (hm_sandbox_manager) {
+		hm_sandbox_manager->register_sandbox(sandbox);
+	}
+
+	// Pre-scan all script files and register class names
+	// This uses lightweight parsing to extract class_name WITHOUT loading scripts
+	// Populates the registry so scripts can find base classes during compilation
+	sandbox->register_classes();
+
+	// Load all scripts - they can find base classes in registry
+	// Scripts will compile successfully because registry is already populated
 	sandbox->resolve_dependencies();
 
-	// Configure all loaded scripts to use this sandbox's profile
-	// This must happen after PackedScene is loaded (which loads all dependencies)
-	// but before scene instantiation (which creates GDScriptInstances)
+	// Configure loaded scripts with sandbox profile_id
+	// Sets profile_id on each script so analyzer can identify sandbox membership
 	sandbox->configure_script_profiles();
 
-	// Register all classes from dependencies
-	// This MUST happen before scene instantiation so that scripts can find their base classes
-	sandbox->register_classes();
+	// NOW load the scene - scripts are already loaded, configured, and registered
+	Error err = OK;
+	Ref<Resource> resource = ResourceLoader::load(full_path, "", ResourceFormatLoader::CACHE_MODE_REUSE, &err);
+
+	if (err != OK || resource.is_null()) {
+		// Clean up sandbox if scene loading fails
+		if (hm_sandbox_manager) {
+			hm_sandbox_manager->unregister_sandbox(sandbox);
+		}
+		memdelete(sandbox);
+		ERR_FAIL_V_MSG(nullptr, "Failed to load Resource: " + full_path);
+	}
+	// Cast to PackedScene
+	Ref<PackedScene> scene = resource;
+	if (scene.is_null()) {
+		// Clean up sandbox if scene loading fails
+		if (hm_sandbox_manager) {
+			hm_sandbox_manager->unregister_sandbox(sandbox);
+		}
+		memdelete(sandbox);
+		ERR_FAIL_V_MSG(nullptr, "Resource is not a PackedScene: " + full_path);
+	}
 
 	// Instantiate the scene to a node
 	Node *instance = scene->instantiate();
 	if (!instance) {
-		memdelete(sandbox); // Clean up sandbox if instantiation fails
+		// Clean up sandbox if instantiation fails
+		if (hm_sandbox_manager) {
+			hm_sandbox_manager->unregister_sandbox(sandbox);
+		}
+		memdelete(sandbox);
 		ERR_FAIL_V_MSG(nullptr, "Failed to instantiate PackedScene: " + full_path);
 	}
 
@@ -622,10 +654,8 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 	sandbox->set_packed_scene(scene);
 	sandbox->set_root_node(instance);
 
-	// Register for frame callbacks if manager is available
-	if (hm_sandbox_manager) {
-		hm_sandbox_manager->register_sandbox(sandbox);
-	}
+	// Sandbox is already registered in manager (done early in this function)
+	// No need to register again
 
 	return sandbox;
 }

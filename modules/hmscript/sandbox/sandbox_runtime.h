@@ -105,8 +105,9 @@ public:
 	// Iterates through dependencies and sets sandbox_enabled and profile_id for each loaded script
 	void configure_script_profiles();
 
-	// Register all classes from dependency scripts into the sandbox-local class registry
-	// Iterates through dependencies and registers scripts with class_name declarations
+	// Pre-scan script files and register class names BEFORE loading scripts
+	// Uses lightweight parsing to extract class_name without full compilation
+	// This allows scripts to find base classes during compilation
 	void register_classes();
 
 	// Sandbox-local class registry for isolated class resolution
