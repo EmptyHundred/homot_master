@@ -53,11 +53,15 @@ void HMSandbox::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_dependencies"), &HMSandbox::get_dependencies);
 
-	ClassDB::bind_method(D_METHOD("resolve_dependencies"), &HMSandbox::resolve_dependencies);
+	ClassDB::bind_method(D_METHOD("get_local_classes"), &HMSandbox::get_local_classes);
 
-	ClassDB::bind_method(D_METHOD("register_classes"), &HMSandbox::register_classes);
+	// ClassDB::bind_method(D_METHOD("get_dependency_script", "path"), &HMSandbox::get_dependency_script);
 
-	ClassDB::bind_method(D_METHOD("configure_script_profiles"), &HMSandbox::configure_script_profiles);
+	// ClassDB::bind_method(D_METHOD("resolve_dependencies"), &HMSandbox::resolve_dependencies);
+
+	// ClassDB::bind_method(D_METHOD("register_classes"), &HMSandbox::register_classes);
+
+	// ClassDB::bind_method(D_METHOD("configure_script_profiles"), &HMSandbox::configure_script_profiles);
 
 	ClassDB::bind_static_method("HMSandbox", D_METHOD("collect_dependencies", "dir_path"), &HMSandbox::collect_dependencies);
 
@@ -141,11 +145,33 @@ String HMSandbox::get_scene_filename() const {
 }
 
 void HMSandbox::set_dependencies(const PackedStringArray &p_dependencies) {
-	dependencies = p_dependencies;
+	// Clear existing dependencies
+	dependencies.clear();
+
+	// Populate the map with paths (scripts will be loaded later)
+	for (int i = 0; i < p_dependencies.size(); i++) {
+		dependencies.insert(p_dependencies[i], Ref<GDScript>());
+	}
 }
 
 PackedStringArray HMSandbox::get_dependencies() const {
-	return dependencies;
+	PackedStringArray result;
+	result.resize(dependencies.size());
+
+	int idx = 0;
+	for (const KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		result.write[idx++] = E.key;
+	}
+
+	return result;
+}
+
+Ref<GDScript> HMSandbox::get_dependency_script(const String &p_path) const {
+	HashMap<String, Ref<GDScript>>::ConstIterator it = dependencies.find(p_path);
+	if (it) {
+		return it->value;
+	}
+	return Ref<GDScript>();
 }
 
 bool HMSandbox::has_local_class(const String &p_class_name) const {
@@ -154,6 +180,10 @@ bool HMSandbox::has_local_class(const String &p_class_name) const {
 
 Ref<GDScript> HMSandbox::lookup_local_class(const String &p_class_name) const {
 	return class_registry.get_class_script(p_class_name);
+}
+
+Dictionary HMSandbox::get_local_classes() const {
+	return class_registry.get_all_classes();
 }
 
 HMSandboxConfig &HMSandbox::get_config() {
@@ -298,22 +328,21 @@ void HMSandbox::unload() {
 	// Remove all children (which cleans up the root node)
 	set_root_node(nullptr);
 
-	// Clear GDScript cache for PackedScene dependencies
-	if (packed_scene.is_valid()) {
-		// Get all resolved dependencies
-		PackedStringArray deps = get_dependencies();
+	// Clear GDScript cache for all dependencies
+	for (const KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		const String &script_path = E.key;
 
-		// Clear GDScript cache for each HMScript dependency
-		for (int i = 0; i < deps.size(); i++) {
-			String actual_path = deps[i];
-
-			if (actual_path.ends_with(".hm") || actual_path.ends_with(".hmc")) {
-				// Remove script from GDScript cache
-				GDScriptCache::remove_script(actual_path);
-			}
+		if (script_path.ends_with(".hm") || script_path.ends_with(".hmc")) {
+			// Remove script from GDScript cache
+			GDScriptCache::remove_script(script_path);
 		}
+	}
 
-		// Clear the PackedScene reference
+	// Clear the dependencies map
+	dependencies.clear();
+
+	// Clear the PackedScene reference
+	if (packed_scene.is_valid()) {
 		set_packed_scene(Ref<PackedScene>());
 	}
 }
@@ -381,8 +410,34 @@ void HMSandbox::resolve_dependencies() {
 		return;
 	}
 
-	// Call static method and store result
-	dependencies = collect_dependencies(load_directory);
+	// Collect all .hm/.hmc paths and pre-load all scripts
+	PackedStringArray paths = collect_dependencies(load_directory);
+	int loaded_count = 0;
+
+	for (int i = 0; i < paths.size(); i++) {
+		const String &script_path = paths[i];
+
+		// Pre-load the script
+		Ref<GDScript> script = ResourceLoader::load(
+				script_path,
+				"",
+				ResourceFormatLoader::CACHE_MODE_REUSE);
+
+		if (script.is_valid()) {
+			dependencies.insert(script_path, script);
+			loaded_count++;
+		} else {
+			WARN_PRINT(vformat("Failed to load dependency script: %s", script_path));
+			// Still insert with null to track that we attempted to load it
+			dependencies.insert(script_path, Ref<GDScript>());
+		}
+	}
+
+	print_verbose(vformat(
+			"Sandbox dependency resolution: Loaded %d/%d scripts from '%s'",
+			loaded_count,
+			paths.size(),
+			load_directory));
 }
 
 void HMSandbox::configure_script_profiles() {
@@ -391,29 +446,24 @@ void HMSandbox::configure_script_profiles() {
 		return;
 	}
 
-	PackedStringArray deps = get_dependencies();
+	int configured_count = 0;
 
-	for (int i = 0; i < deps.size(); i++) {
-		const String &script_path = deps[i];
-
-		// Load the script if not already cached (ensures ALL dependencies are loaded)
-		Ref<GDScript> gds = ResourceLoader::load(
-				script_path,
-				"",
-				ResourceFormatLoader::CACHE_MODE_REUSE);
-
-		if (gds.is_null()) {
-			WARN_PRINT(vformat(
-					"Sandbox '%s': Failed to load dependency script '%s'",
-					profile_id,
-					script_path));
+	for (KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		// Skip scripts that failed to load
+		if (E.value.is_null()) {
 			continue;
 		}
 
 		// Update the script's sandbox profile_id from "hm_default" to this sandbox's unique ID
-		gds->set_sandbox_enabled(true, profile_id);
+		E.value->set_sandbox_enabled(true, profile_id);
+		configured_count++;
 	}
 
+	print_verbose(vformat(
+			"Sandbox '%s': Configured sandbox profile for %d/%d dependency scripts",
+			profile_id,
+			configured_count,
+			dependencies.size()));
 }
 
 String HMSandbox::generate_sandbox_id() {
@@ -452,11 +502,15 @@ void HMSandbox::register_classes() {
 		return;
 	}
 
-	PackedStringArray deps = get_dependencies();
 	int registered_count = 0;
 
-	for (int i = 0; i < deps.size(); i++) {
-		const String &script_path = deps[i];
+	for (const KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		const String &script_path = E.key;
+
+		// Skip scripts that failed to load
+		if (E.value.is_null()) {
+			continue;
+		}
 
 		// Extract class info using GDScriptLanguage::get_global_class_name()
 		String base_type, icon_path;
@@ -469,44 +523,37 @@ void HMSandbox::register_classes() {
 				&is_abstract,
 				&is_tool);
 
+		// Only register scripts with class_name declarations
 		if (!class_name.is_empty()) {
-			// Load the script (will be cached)
-			Ref<GDScript> script = ResourceLoader::load(
-					script_path,
-					"",
-					ResourceFormatLoader::CACHE_MODE_REUSE);
+			// Register in sandbox-local registry
+			SandboxClassRegistry::ClassInfo info;
+			info.class_name = class_name;
+			info.script_path = script_path;
+			info.base_type = base_type;
+			info.icon_path = icon_path;
+			info.is_abstract = is_abstract;
+			info.is_tool = is_tool;
+			info.cached_script = E.value;
 
-			if (script.is_valid()) {
-				// Register in sandbox-local registry
-				SandboxClassRegistry::ClassInfo info;
-				info.class_name = class_name;
-				info.script_path = script_path;
-				info.base_type = base_type;
-				info.icon_path = icon_path;
-				info.is_abstract = is_abstract;
-				info.is_tool = is_tool;
-				info.cached_script = script;
+			bool registered = class_registry.register_class(info);
 
-				bool registered = class_registry.register_class(info);
-
-				if (registered) {
-					registered_count++;
-					print_verbose(vformat(
-							"Sandbox '%s': Registered local class '%s' from '%s' (base: '%s')",
-							profile_id,
-							class_name,
-							script_path,
-							base_type.is_empty() ? "none" : base_type));
-				}
-			} else {
-				WARN_PRINT(vformat(
-						"Sandbox '%s': Failed to load script '%s' for class '%s'",
+			if (registered) {
+				registered_count++;
+				print_verbose(vformat(
+						"Sandbox '%s': Registered local class '%s' from '%s' (base: '%s')",
 						profile_id,
+						class_name,
 						script_path,
-						class_name));
+						base_type.is_empty() ? "none" : base_type));
 			}
 		}
 	}
+
+	print_verbose(vformat(
+			"Sandbox '%s': Registered %d local classes from %d dependencies",
+			profile_id,
+			registered_count,
+			dependencies.size()));
 }
 
 HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filename) {
@@ -542,16 +589,17 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 	sandbox->set_scene_filename(p_tscn_filename);
 
 	// Resolve all .hm and .hmc dependencies from the load directory
+	// Preload all dependencies to dependencies map
 	sandbox->resolve_dependencies();
-
-	// Register all classes from dependencies
-	// This MUST happen before scene instantiation so that scripts can find their base classes
-	sandbox->register_classes();
 
 	// Configure all loaded scripts to use this sandbox's profile
 	// This must happen after PackedScene is loaded (which loads all dependencies)
 	// but before scene instantiation (which creates GDScriptInstances)
 	sandbox->configure_script_profiles();
+
+	// Register all classes from dependencies
+	// This MUST happen before scene instantiation so that scripts can find their base classes
+	sandbox->register_classes();
 
 	// Instantiate the scene to a node
 	Node *instance = scene->instantiate();

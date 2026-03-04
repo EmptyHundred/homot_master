@@ -94,6 +94,9 @@ public:
 	void set_dependencies(const PackedStringArray &p_dependencies);
 	PackedStringArray get_dependencies() const;
 
+	// Get a loaded dependency script by path (returns null if not found or not loaded yet)
+	Ref<GDScript> get_dependency_script(const String &p_path) const;
+
 	// Instance method: Resolve and populate dependencies by scanning the load directory
 	// recursively for all .hm and .hmc files. Stores results in the dependencies property.
 	void resolve_dependencies();
@@ -109,6 +112,7 @@ public:
 	// Sandbox-local class registry for isolated class resolution
 	bool has_local_class(const String &p_class_name) const;
 	Ref<GDScript> lookup_local_class(const String &p_class_name) const;
+	Dictionary get_local_classes() const;
 	SandboxClassRegistry &get_class_registry() { return class_registry; }
 	const SandboxClassRegistry &get_class_registry() const { return class_registry; }
 
@@ -133,7 +137,8 @@ private:
 	String load_directory; // Directory from which the sandbox was loaded
 	String scene_filename; // Filename of the scene file (e.g., "scene.tscn")
 
-	PackedStringArray dependencies; // All .hm and .hmc file paths found in the sandbox directory
+	// Map of script path -> loaded GDScript for all .hm and .hmc dependencies in the sandbox
+	HashMap<String, Ref<GDScript>> dependencies;
 
 	// Direct pointer to the GDScriptLanguage profile
 	SandboxProfile *profile = nullptr;

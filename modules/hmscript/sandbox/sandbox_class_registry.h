@@ -63,6 +63,10 @@ public:
 	// Get all registered classes
 	PackedStringArray get_all_class_names() const;
 
+	// Get a snapshot of all registered classes as a Dictionary
+	// Returns: { "ClassName1": "script_path1", "ClassName2": "script_path2", ... }
+	Dictionary get_all_classes() const;
+
 	// Get number of registered classes
 	int get_class_count() const { return name_to_class.size(); }
 

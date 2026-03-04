@@ -143,6 +143,17 @@ PackedStringArray SandboxClassRegistry::get_all_class_names() const {
 	return result;
 }
 
+Dictionary SandboxClassRegistry::get_all_classes() const {
+	Dictionary result;
+
+	for (const KeyValue<String, ClassInfo> &E : name_to_class) {
+		const ClassInfo &info = E.value;
+		result[info.class_name] = info.script_path;
+	}
+
+	return result;
+}
+
 void SandboxClassRegistry::print_registry() const {
 	print_line(vformat("=== Sandbox Class Registry (%d classes) ===", name_to_class.size()));
 
