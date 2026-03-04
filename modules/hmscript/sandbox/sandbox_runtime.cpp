@@ -53,9 +53,15 @@ void HMSandbox::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_dependencies"), &HMSandbox::get_dependencies);
 
-	ClassDB::bind_method(D_METHOD("unload"), &HMSandbox::unload);
+	ClassDB::bind_method(D_METHOD("resolve_dependencies"), &HMSandbox::resolve_dependencies);
 
-	ClassDB::bind_static_method("HMSandbox", D_METHOD("collect_dependencies", "directory"), &HMSandbox::collect_dependencies);
+	ClassDB::bind_method(D_METHOD("register_classes"), &HMSandbox::register_classes);
+
+	ClassDB::bind_method(D_METHOD("configure_script_profiles"), &HMSandbox::configure_script_profiles);
+
+	ClassDB::bind_static_method("HMSandbox", D_METHOD("collect_dependencies", "dir_path"), &HMSandbox::collect_dependencies);
+
+	ClassDB::bind_method(D_METHOD("unload"), &HMSandbox::unload);
 }
 
 void HMSandbox::_notification(int p_what) {
@@ -140,6 +146,14 @@ void HMSandbox::set_dependencies(const PackedStringArray &p_dependencies) {
 
 PackedStringArray HMSandbox::get_dependencies() const {
 	return dependencies;
+}
+
+bool HMSandbox::has_local_class(const String &p_class_name) const {
+	return class_registry.has_class(p_class_name);
+}
+
+Ref<GDScript> HMSandbox::lookup_local_class(const String &p_class_name) const {
+	return class_registry.get_class_script(p_class_name);
 }
 
 HMSandboxConfig &HMSandbox::get_config() {
@@ -279,6 +293,8 @@ String HMSandbox::get_error_report_markdown() const {
 }
 
 void HMSandbox::unload() {
+	class_registry.clear();
+
 	// Remove all children (which cleans up the root node)
 	set_root_node(nullptr);
 
@@ -302,17 +318,14 @@ void HMSandbox::unload() {
 	}
 }
 
-PackedStringArray HMSandbox::collect_dependencies(const String &p_directory) {
-	PackedStringArray result;
-
-	// Open the directory
+// Helper function for recursive directory scanning
+static void _collect_dependencies_recursive(const String &p_directory, PackedStringArray &r_result) {
 	Ref<DirAccess> dir = DirAccess::open(p_directory);
 	if (dir.is_null()) {
-		ERR_PRINT("Failed to open directory: " + p_directory);
-		return result;
+		WARN_PRINT("Failed to open directory: " + p_directory);
+		return;
 	}
 
-	// List all files and directories
 	dir->list_dir_begin();
 	String file_name = dir->get_next();
 
@@ -331,14 +344,11 @@ PackedStringArray HMSandbox::collect_dependencies(const String &p_directory) {
 
 		if (dir->current_is_dir()) {
 			// Recursively collect dependencies from subdirectory
-			PackedStringArray sub_deps = collect_dependencies(full_path);
-			for (int i = 0; i < sub_deps.size(); i++) {
-				result.push_back(sub_deps[i]);
-			}
+			_collect_dependencies_recursive(full_path, r_result);
 		} else {
 			// Check if file has .hm or .hmc extension
 			if (file_name.ends_with(".hm") || file_name.ends_with(".hmc")) {
-				result.push_back(full_path);
+				r_result.push_back(full_path);
 			}
 		}
 
@@ -346,31 +356,157 @@ PackedStringArray HMSandbox::collect_dependencies(const String &p_directory) {
 	}
 
 	dir->list_dir_end();
+}
+
+PackedStringArray HMSandbox::collect_dependencies(const String &p_dir_path) {
+	PackedStringArray result;
+
+	if (p_dir_path.is_empty()) {
+		WARN_PRINT("Cannot collect dependencies: directory path is empty.");
+		return result;
+	}
+
+	// Recursively collect all .hm and .hmc files from the directory
+	_collect_dependencies_recursive(p_dir_path, result);
+
 	return result;
 }
 
-String HMSandbox::generate_uuid() {
-	// Generate a short UUID (8 hex characters)
+void HMSandbox::resolve_dependencies() {
+	// Clear existing dependencies
+	dependencies.clear();
+
+	if (load_directory.is_empty()) {
+		WARN_PRINT("Cannot resolve dependencies: load_directory is empty.");
+		return;
+	}
+
+	// Call static method and store result
+	dependencies = collect_dependencies(load_directory);
+}
+
+void HMSandbox::configure_script_profiles() {
+	if (profile_id.is_empty()) {
+		WARN_PRINT("Cannot configure script profiles: profile_id is empty.");
+		return;
+	}
+
+	PackedStringArray deps = get_dependencies();
+
+	for (int i = 0; i < deps.size(); i++) {
+		const String &script_path = deps[i];
+
+		// Load the script if not already cached (ensures ALL dependencies are loaded)
+		Ref<GDScript> gds = ResourceLoader::load(
+				script_path,
+				"",
+				ResourceFormatLoader::CACHE_MODE_REUSE);
+
+		if (gds.is_null()) {
+			WARN_PRINT(vformat(
+					"Sandbox '%s': Failed to load dependency script '%s'",
+					profile_id,
+					script_path));
+			continue;
+		}
+
+		// Update the script's sandbox profile_id from "hm_default" to this sandbox's unique ID
+		gds->set_sandbox_enabled(true, profile_id);
+	}
+
+}
+
+String HMSandbox::generate_sandbox_id() {
+	// Generate a unique sandbox ID with "Sandbox_" prefix + 8 hex characters
+	String uuid;
+
 	Ref<Crypto> crypto = Crypto::create();
 	if (crypto.is_null()) {
 		// Fallback if crypto is unavailable
 		uint64_t ticks = OS::get_singleton()->get_ticks_usec();
-		return String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+		uuid = String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+		return "Sandbox_" + uuid;
 	}
 
 	PackedByteArray bytes = crypto->generate_random_bytes(4);
 	if (bytes.size() != 4) {
 		// Fallback if random generation fails
 		uint64_t ticks = OS::get_singleton()->get_ticks_usec();
-		return String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+		uuid = String::num_int64(ticks & 0xFFFFFFFF, 16).pad_zeros(8);
+		return "Sandbox_" + uuid;
 	}
 
 	// Format as 8-character hex string
-	String result;
 	for (int i = 0; i < 4; i++) {
-		result += String::num_int64(bytes[i], 16).pad_zeros(2);
+		uuid += String::num_int64(bytes[i], 16).pad_zeros(2);
 	}
-	return result;
+	return "Sandbox_" + uuid;
+}
+
+void HMSandbox::register_classes() {
+	class_registry.clear();
+
+	GDScriptLanguage *lang = GDScriptLanguage::get_singleton();
+	if (!lang) {
+		ERR_PRINT("GDScriptLanguage not available for class registration.");
+		return;
+	}
+
+	PackedStringArray deps = get_dependencies();
+	int registered_count = 0;
+
+	for (int i = 0; i < deps.size(); i++) {
+		const String &script_path = deps[i];
+
+		// Extract class info using GDScriptLanguage::get_global_class_name()
+		String base_type, icon_path;
+		bool is_abstract = false, is_tool = false;
+
+		String class_name = lang->get_global_class_name(
+				script_path,
+				&base_type,
+				&icon_path,
+				&is_abstract,
+				&is_tool);
+
+		if (!class_name.is_empty()) {
+			// Load the script (will be cached)
+			Ref<GDScript> script = ResourceLoader::load(
+					script_path,
+					"",
+					ResourceFormatLoader::CACHE_MODE_REUSE);
+
+			if (script.is_valid()) {
+				// Register in sandbox-local registry
+				SandboxClassRegistry::ClassInfo info;
+				info.class_name = class_name;
+				info.script_path = script_path;
+				info.base_type = base_type;
+				info.icon_path = icon_path;
+				info.is_abstract = is_abstract;
+				info.is_tool = is_tool;
+				info.cached_script = script;
+
+				bool registered = class_registry.register_class(info);
+
+				if (registered) {
+					registered_count++;
+					print_verbose(vformat(
+							"Sandbox '%s': Registered local class '%s' from '%s' (base: '%s')",
+							profile_id,
+							class_name,
+							script_path,
+							base_type.is_empty() ? "none" : base_type));
+				}
+			} else {
+				WARN_PRINT(vformat(
+						"Sandbox '%s': Failed to load script '%s' for class '%s'",
+						profile_id,
+						script_path,
+						class_name));
+			}
+		}
+	}
 }
 
 HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filename) {
@@ -395,32 +531,33 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 	}
 
 	// Constructing Sandbox
-	String profile_id = "Sandbox_" + generate_uuid();
-	// Collect all .hm and .hmc dependencies from the directory
-	PackedStringArray deps = collect_dependencies(p_directory);
+	String profile_id = generate_sandbox_id();
 
-	// Update all loaded .hm/.hmc scripts to use this sandbox's unique profile_id
+	// Create sandbox instance early so we can populate its registry
+	HMSandbox *sandbox = memnew(HMSandbox);
+	
+	sandbox->set_profile_id(profile_id);
+	sandbox->set_name(profile_id);
+	sandbox->set_load_directory(p_directory);
+	sandbox->set_scene_filename(p_tscn_filename);
+
+	// Resolve all .hm and .hmc dependencies from the load directory
+	sandbox->resolve_dependencies();
+
+	// Register all classes from dependencies
+	// This MUST happen before scene instantiation so that scripts can find their base classes
+	sandbox->register_classes();
+
+	// Configure all loaded scripts to use this sandbox's profile
 	// This must happen after PackedScene is loaded (which loads all dependencies)
 	// but before scene instantiation (which creates GDScriptInstances)
-	for (int i = 0; i < deps.size(); i++) {
-		const String &script_path = deps[i];
+	sandbox->configure_script_profiles();
 
-		// Try to get the already-loaded script from ResourceCache
-		Ref<Resource> res = ResourceCache::get_ref(script_path);
-		if (res.is_null()) {
-			// Script not in cache yet, it will be loaded later
-			continue;
-		}
-
-		// Cast to GDScript
-		Ref<GDScript> gds = res;
-		if (gds.is_null()) {
-			// Not a GDScript resource
-			continue;
-		}
-
-		// Update the script's sandbox profile_id from "hm_default" to this sandbox's unique ID
-		gds->set_sandbox_enabled(true, profile_id);
+	// Instantiate the scene to a node
+	Node *instance = scene->instantiate();
+	if (!instance) {
+		memdelete(sandbox); // Clean up sandbox if instantiation fails
+		ERR_FAIL_V_MSG(nullptr, "Failed to instantiate PackedScene: " + full_path);
 	}
 
 	// Ensure the GDScriptLanguage has a sandbox profile created for this ID
@@ -431,25 +568,11 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 		profile_ptr = lang->ensure_sandbox_profile(profile_id);
 	}
 
-	// Instantiate the scene to a node
-	Node *instance = scene->instantiate();
-	if (!instance) {
-		ERR_FAIL_V_MSG(nullptr, "Failed to instantiate PackedScene: " + full_path);
-	}
-
-	// Create a new sandbox runtime with unique profile_id
-	HMSandbox *sandbox = memnew(HMSandbox);
-
-	sandbox->set_profile_id(profile_id);
-	sandbox->set_name(profile_id);
+	// Configure the sandbox with the profile
 	sandbox->set_profile(profile_ptr);
 
 	sandbox->set_packed_scene(scene);
 	sandbox->set_root_node(instance);
-	sandbox->set_load_directory(p_directory);
-	sandbox->set_scene_filename(p_tscn_filename);
-
-	sandbox->set_dependencies(deps);
 
 	// Register for frame callbacks if manager is available
 	if (hm_sandbox_manager) {

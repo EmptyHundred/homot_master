@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sandbox_class_registry.h"
 #include "sandbox_config.h"
 #include "sandbox_error.h"
 #include "sandbox_limiter.h"
@@ -93,17 +94,37 @@ public:
 	void set_dependencies(const PackedStringArray &p_dependencies);
 	PackedStringArray get_dependencies() const;
 
+	// Instance method: Resolve and populate dependencies by scanning the load directory
+	// recursively for all .hm and .hmc files. Stores results in the dependencies property.
+	void resolve_dependencies();
+
+	// Apply sandbox profile to all loaded dependency scripts
+	// Iterates through dependencies and sets sandbox_enabled and profile_id for each loaded script
+	void configure_script_profiles();
+
+	// Register all classes from dependency scripts into the sandbox-local class registry
+	// Iterates through dependencies and registers scripts with class_name declarations
+	void register_classes();
+
+	// Sandbox-local class registry for isolated class resolution
+	bool has_local_class(const String &p_class_name) const;
+	Ref<GDScript> lookup_local_class(const String &p_class_name) const;
+	SandboxClassRegistry &get_class_registry() { return class_registry; }
+	const SandboxClassRegistry &get_class_registry() const { return class_registry; }
+
 	// Unload the sandbox, cleaning up resources and clearing caches
 	void unload();
 
 	// Static loader method - loads a sandbox from directory and scene file
 	static HMSandbox *load(const String &p_directory, const String &p_tscn_filename);
 
-	// Collect all .hm and .hmc files recursively from a directory
-	static PackedStringArray collect_dependencies(const String &p_directory);
+	// Static method: Collect all .hm and .hmc files recursively from a directory
+	// Returns a PackedStringArray of all found script paths
+	static PackedStringArray collect_dependencies(const String &p_dir_path);
 
-	// Generate a unique UUID for sandbox identification
-	static String generate_uuid();
+	// Generate a unique sandbox ID in the format "Sandbox_XXXXXXXX"
+	// Returns a string with "Sandbox_" prefix followed by 8 hex characters
+	static String generate_sandbox_id();
 
 private:
 	String profile_id;
@@ -116,6 +137,9 @@ private:
 
 	// Direct pointer to the GDScriptLanguage profile
 	SandboxProfile *profile = nullptr;
+
+	// Sandbox-local class registry for isolated class name resolution
+	SandboxClassRegistry class_registry;
 
 	// Static dummy instances for error cases (when profile lookup fails)
 	static HMSandboxConfig dummy_config;
