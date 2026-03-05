@@ -113,12 +113,14 @@ SandboxClassRegistry::ClassInfo SandboxClassRegistry::get_class_info(const Strin
 	return name_to_class[p_class_name];
 }
 
+/*
 Ref<GDScript> SandboxClassRegistry::get_class_script(const String &p_class_name) const {
 	if (!name_to_class.has(p_class_name)) {
 		return Ref<GDScript>();
 	}
 	return name_to_class[p_class_name].cached_script;
 }
+*/
 
 bool SandboxClassRegistry::has_script_path(const String &p_path) const {
 	return path_to_name.has(p_path);

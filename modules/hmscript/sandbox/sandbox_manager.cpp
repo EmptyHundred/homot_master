@@ -19,6 +19,7 @@ void HMSandboxManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_sandbox", "sandbox"), &HMSandboxManager::register_sandbox);
 	ClassDB::bind_method(D_METHOD("unregister_sandbox", "sandbox"), &HMSandboxManager::unregister_sandbox);
 	ClassDB::bind_method(D_METHOD("find_sandbox_by_profile_id", "profile_id"), &HMSandboxManager::find_sandbox_by_profile_id);
+	ClassDB::bind_method(D_METHOD("find_sandbox_by_script_path", "script_path"), &HMSandboxManager::find_sandbox_by_script_path);
 	ClassDB::bind_method(D_METHOD("remove_script_cache", "script_path"), &HMSandboxManager::remove_script_cache);
 }
 
@@ -82,6 +83,30 @@ HMSandbox *HMSandboxManager::find_sandbox_by_profile_id(const String &p_profile_
 
 	if (profile_to_sandbox.has(p_profile_id)) {
 		return profile_to_sandbox[p_profile_id];
+	}
+
+	return nullptr;
+}
+
+HMSandbox *HMSandboxManager::find_sandbox_by_script_path(const String &p_script_path) {
+	if (p_script_path.is_empty()) {
+		return nullptr;
+	}
+
+	// Get all registered sandboxes
+	Vector<HMSandbox *> sandboxes = get_all_sandboxes();
+
+	// Iterate through all registered sandboxes
+	for (int i = 0; i < sandboxes.size(); i++) {
+		HMSandbox *sandbox = sandboxes[i];
+		if (!sandbox) {
+			continue;
+		}
+
+		// Check if the script path is registered in the sandbox's class registry
+		if (sandbox->has_script_path(p_script_path)) {
+			return sandbox;
+		}
 	}
 
 	return nullptr;

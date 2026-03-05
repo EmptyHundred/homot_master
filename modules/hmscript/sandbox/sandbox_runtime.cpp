@@ -54,6 +54,8 @@ void HMSandbox::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_dependencies"), &HMSandbox::get_dependencies);
 
 	ClassDB::bind_method(D_METHOD("get_local_classes"), &HMSandbox::get_local_classes);
+	ClassDB::bind_method(D_METHOD("has_script_path", "path"), &HMSandbox::has_script_path);
+	ClassDB::bind_method(D_METHOD("get_script_path_for_class", "class_name"), &HMSandbox::get_script_path_for_class);
 
 	// ClassDB::bind_method(D_METHOD("get_dependency_script", "path"), &HMSandbox::get_dependency_script);
 
@@ -178,12 +180,20 @@ bool HMSandbox::has_local_class(const String &p_class_name) const {
 	return class_registry.has_class(p_class_name);
 }
 
-Ref<GDScript> HMSandbox::lookup_local_class(const String &p_class_name) const {
-	return class_registry.get_class_script(p_class_name);
-}
-
 Dictionary HMSandbox::get_local_classes() const {
 	return class_registry.get_all_classes();
+}
+
+bool HMSandbox::has_script_path(const String &p_path) const {
+	return class_registry.has_script_path(p_path);
+}
+
+String HMSandbox::get_script_path_for_class(const String &p_class_name) const {
+	if (!class_registry.has_class(p_class_name)) {
+		return String();
+	}
+	SandboxClassRegistry::ClassInfo info = class_registry.get_class_info(p_class_name);
+	return info.script_path;
 }
 
 HMSandboxConfig &HMSandbox::get_config() {
@@ -545,7 +555,7 @@ void HMSandbox::register_classes() {
 			info.icon_path = icon_path;
 			info.is_abstract = is_abstract;
 			info.is_tool = is_tool;
-			info.cached_script = Ref<GDScript>(); // Will be populated after loading
+			// info.cached_script = Ref<GDScript>(); // Will be populated after loading
 
 			bool registered = class_registry.register_class(info);
 

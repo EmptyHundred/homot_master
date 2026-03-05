@@ -117,6 +117,13 @@ public:
 	SandboxClassRegistry &get_class_registry() { return class_registry; }
 	const SandboxClassRegistry &get_class_registry() const { return class_registry; }
 
+	// Check if a script path is registered in this sandbox
+	bool has_script_path(const String &p_path) const;
+
+	// Get the script path for a registered class name
+	// Returns empty string if class is not registered
+	String get_script_path_for_class(const String &p_class_name) const;
+
 	// Unload the sandbox, cleaning up resources and clearing caches
 	void unload();
 

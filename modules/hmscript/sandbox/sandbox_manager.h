@@ -39,6 +39,10 @@ public:
 	// 通过 profile_id 查找沙盒实例。
 	HMSandbox *find_sandbox_by_profile_id(const String &p_profile_id);
 
+	// 通过脚本路径查找所属的沙盒实例。
+	// 搜索所有已注册的沙盒，检查给定脚本路径是否在其依赖中。
+	HMSandbox *find_sandbox_by_script_path(const String &p_script_path);
+
 	// 获取所有活跃的沙盒实例。
 	Vector<HMSandbox *> get_all_sandboxes() const;
 

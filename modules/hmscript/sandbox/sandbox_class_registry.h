@@ -25,7 +25,7 @@ public:
 		String icon_path; // Optional icon path
 		bool is_abstract = false;
 		bool is_tool = false;
-		Ref<GDScript> cached_script; // Keep script loaded
+		// Ref<GDScript> cached_script; // Keep script loaded
 
 		ClassInfo() = default;
 	};
@@ -54,7 +54,8 @@ public:
 	// Lookup by class name
 	bool has_class(const String &p_class_name) const;
 	ClassInfo get_class_info(const String &p_class_name) const;
-	Ref<GDScript> get_class_script(const String &p_class_name) const;
+	
+	//Ref<GDScript> get_class_script(const String &p_class_name) const;
 
 	// Lookup by script path
 	bool has_script_path(const String &p_path) const;

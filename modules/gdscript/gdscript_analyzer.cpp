@@ -44,6 +44,9 @@
 #include "core/templates/hash_map.h"
 #include "scene/main/node.h"
 
+#include "modules/hmscript/sandbox/sandbox_manager.h"
+#include "modules/hmscript/sandbox/sandbox_runtime.h"
+
 #if defined(TOOLS_ENABLED) && !defined(DISABLE_DEPRECATED)
 #define SUGGEST_GODOT4_RENAMES
 #include "editor/project_upgrade/renames_map_3_to_4.h"
@@ -219,6 +222,22 @@ static GDScriptParser::DataType make_global_enum_type(const StringName &p_enum_n
 	}
 
 	return type;
+}
+
+// Helper function to get the sandbox instance for a given script path
+static hmsandbox::HMSandbox *get_sandbox_for_script(const String &p_script_path) {
+	if (p_script_path.is_empty()) {
+		return nullptr;
+	}
+
+	// Get the global sandbox manager
+	hmsandbox::HMSandboxManager *manager = hmsandbox::get_global_sandbox_manager();
+	if (!manager) {
+		return nullptr;
+	}
+
+	// Find the sandbox that owns this script path
+	return manager->find_sandbox_by_script_path(p_script_path);
 }
 
 static GDScriptParser::DataType make_builtin_meta_type(Variant::Type p_type) {
@@ -466,7 +485,44 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 			const StringName &name = id->name;
 			base.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
 
-			if (ScriptServer::is_global_class(name)) {
+			// Check sandbox local classes first (before global classes)
+			hmsandbox::HMSandbox *sandbox = get_sandbox_for_script(parser->script_path);
+			bool found_in_sandbox = false;
+			if (sandbox && sandbox->has_script_path(parser->script_path)) {
+				// This script belongs to a sandbox, check local classes first
+				if (sandbox->has_local_class(name)) {
+					String base_path = sandbox->get_script_path_for_class(name);
+					if (!base_path.is_empty()) {
+
+						if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+							base = parser->head->get_datatype();
+						} else {
+							Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+							if (base_parser.is_null()) {
+								push_error(vformat(R"(Could not resolve super class "%s" from sandbox local classes.)", name), id);
+								return ERR_PARSE_ERROR;
+							}
+
+							Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+							if (err != OK) {
+								push_error(vformat(R"(Could not resolve super class inheritance from sandbox local class "%s".)", name), id);
+								return err;
+							}
+
+#ifdef DEBUG_ENABLED
+							if (!parser->_is_tool && base_parser->get_parser()->_is_tool) {
+								parser->push_warning(p_class, GDScriptWarning::MISSING_TOOL);
+							}
+#endif // DEBUG_ENABLED
+
+							base = base_parser->get_parser()->head->get_datatype();
+						}
+						found_in_sandbox = true;
+					}
+				}
+			}
+
+			if (!found_in_sandbox && ScriptServer::is_global_class(name)) {
 				String base_path = ScriptServer::get_global_class_path(name);
 
 				if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
@@ -492,7 +548,7 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 
 					base = base_parser->get_parser()->head->get_datatype();
 				}
-			} else if (ProjectSettings::get_singleton()->has_autoload(name) && ProjectSettings::get_singleton()->get_autoload(name).is_singleton) {
+			} else if (!found_in_sandbox && ProjectSettings::get_singleton()->has_autoload(name) && ProjectSettings::get_singleton()->get_autoload(name).is_singleton) {
 				const ProjectSettings::AutoloadInfo &info = ProjectSettings::get_singleton()->get_autoload(name);
 				if (!info.path.has_extension(GDScriptLanguage::get_singleton()->get_extension())) {
 					push_error(vformat(R"(Singleton %s is not a GDScript.)", info.name), id);
@@ -518,7 +574,7 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 #endif // DEBUG_ENABLED
 
 				base = info_parser->get_parser()->head->get_datatype();
-			} else if (class_exists(name)) {
+			} else if (!found_in_sandbox && class_exists(name)) {
 				if (Engine::get_singleton()->has_singleton(name)) {
 					push_error(vformat(R"(Cannot inherit native class "%s" because it is an engine singleton.)", name), id);
 					return ERR_PARSE_ERROR;
@@ -526,7 +582,7 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 				base.kind = GDScriptParser::DataType::NATIVE;
 				base.builtin_type = Variant::OBJECT;
 				base.native_type = name;
-			} else {
+			} else if (!found_in_sandbox) {
 				// Look for other classes in script.
 				bool found = false;
 				List<GDScriptParser::ClassNode *> script_classes;
@@ -4542,6 +4598,25 @@ void GDScriptAnalyzer::reduce_identifier(GDScriptParser::IdentifierNode *p_ident
 		p_identifier->source = GDScriptParser::IdentifierNode::NATIVE_CLASS;
 		p_identifier->set_datatype(make_native_meta_type(name));
 		return;
+	}
+
+	// Check sandbox local classes first (before global classes)
+	hmsandbox::HMSandbox *sandbox = get_sandbox_for_script(parser->script_path);
+	if (sandbox && sandbox->has_script_path(parser->script_path)) {
+		// This script belongs to a sandbox, check local classes first
+		if (sandbox->has_local_class(name)) {
+			String path = sandbox->get_script_path_for_class(name);
+			if (!path.is_empty()) {
+				Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+				if (ref.is_valid()) {
+					Error err = ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+					if (err == OK) {
+						p_identifier->set_datatype(ref->get_parser()->head->get_datatype());
+						return;
+					}
+				}
+			}
+		}
 	}
 
 	if (ScriptServer::is_global_class(name)) {
