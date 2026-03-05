@@ -39,9 +39,12 @@
 #include "rgb_to_rgba.glsl.gen.h"
 
 #include "core/config/project_settings.h"
+#include "core/object/callable_mp.h"
+#include "core/os/os.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_context_driver.h"
 #include "servers/rendering/rendering_device.h"
+#include "servers/rendering/rendering_device_binds.h"
 #include "servers/rendering/rendering_server.h"
 
 #if defined(VULKAN_ENABLED)

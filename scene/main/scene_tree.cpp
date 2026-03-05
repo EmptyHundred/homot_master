@@ -32,10 +32,12 @@
 
 STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/io/image_loader.h"
 #include "core/io/resource_loader.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/object/message_queue.h"
 #include "core/object/worker_thread_pool.h"
@@ -54,6 +56,8 @@ STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/world_2d.h"
+#include "servers/display/accessibility_server.h"
+#include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
 
 #ifndef _3D_DISABLED
@@ -208,25 +212,25 @@ void SceneTree::flush_transform_notifications() {
 }
 
 bool SceneTree::is_accessibility_enabled() const {
-	if (!DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ACCESSIBILITY_SCREEN_READER)) {
+	if (!DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_ACCESSIBILITY_SCREEN_READER)) {
 		return false;
 	}
 
-	DisplayServer::AccessibilityMode accessibility_mode = DisplayServer::accessibility_get_mode();
+	AccessibilityServerEnums::AccessibilityMode accessibility_mode = AccessibilityServer::get_singleton()->get_mode();
 	int screen_reader_active = DisplayServer::get_singleton()->accessibility_screen_reader_active();
-	if ((accessibility_mode == DisplayServer::AccessibilityMode::ACCESSIBILITY_DISABLED) || ((accessibility_mode == DisplayServer::AccessibilityMode::ACCESSIBILITY_AUTO) && (screen_reader_active != 1))) {
+	if ((accessibility_mode == AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_DISABLED) || ((accessibility_mode == AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_AUTO) && (screen_reader_active != 1))) {
 		return false;
 	}
 	return true;
 }
 
 bool SceneTree::is_accessibility_supported() const {
-	if (!DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ACCESSIBILITY_SCREEN_READER)) {
+	if (!DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_ACCESSIBILITY_SCREEN_READER)) {
 		return false;
 	}
 
-	DisplayServer::AccessibilityMode accessibility_mode = DisplayServer::accessibility_get_mode();
-	if (accessibility_mode == DisplayServer::AccessibilityMode::ACCESSIBILITY_DISABLED) {
+	AccessibilityServerEnums::AccessibilityMode accessibility_mode = AccessibilityServer::get_singleton()->get_mode();
+	if (accessibility_mode == AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_DISABLED) {
 		return false;
 	}
 	return true;
@@ -246,7 +250,7 @@ void SceneTree::_accessibility_notify_change(const Node *p_node, bool p_remove) 
 	}
 }
 
-void SceneTree::_process_accessibility_changes(DisplayServer::WindowID p_window_id) {
+void SceneTree::_process_accessibility_changes(DisplayServerEnums::WindowID p_window_id) {
 	// Process NOTIFICATION_ACCESSIBILITY_UPDATE.
 	Vector<ObjectID> processed;
 	for (const ObjectID &id : accessibility_change_queue) {
@@ -273,8 +277,8 @@ void SceneTree::_process_accessibility_changes(DisplayServer::WindowID p_window_
 		}
 
 		// Popups have no native window focus, but have focused element.
-		DisplayServer::WindowID popup_id = DisplayServer::get_singleton()->window_get_active_popup();
-		if (popup_id != DisplayServer::INVALID_WINDOW_ID) {
+		DisplayServerEnums::WindowID popup_id = DisplayServer::get_singleton()->window_get_active_popup();
+		if (popup_id != DisplayServerEnums::INVALID_WINDOW_ID) {
 			Window *popup_w = Window::get_from_id(popup_id);
 			if (popup_w && w_this->is_ancestor_of(popup_w)) {
 				w_this = popup_w;
@@ -289,7 +293,7 @@ void SceneTree::_process_accessibility_changes(DisplayServer::WindowID p_window_
 			new_focus_element = w_this->get_focused_accessibility_element();
 		}
 
-		DisplayServer::get_singleton()->accessibility_update_set_focus(new_focus_element);
+		AccessibilityServer::get_singleton()->update_set_focus(new_focus_element);
 	}
 
 	// Cleanup.
@@ -310,7 +314,7 @@ void SceneTree::_flush_accessibility_changes() {
 		accessibility_last_update = time;
 
 		// Push update to the accessibility driver.
-		DisplayServer::get_singleton()->accessibility_update_if_active(callable_mp(this, &SceneTree::_process_accessibility_changes));
+		AccessibilityServer::get_singleton()->update_if_active(callable_mp(this, &SceneTree::_process_accessibility_changes));
 	}
 }
 
@@ -917,9 +921,21 @@ void SceneTree::_notification(int p_notification) {
 		case NOTIFICATION_WM_ABOUT:
 		case NOTIFICATION_CRASH:
 		case NOTIFICATION_APPLICATION_RESUMED:
-		case NOTIFICATION_APPLICATION_PAUSED:
+		case NOTIFICATION_APPLICATION_PAUSED: {
+			// Pass these to nodes, since they are mirrored.
+			get_root()->propagate_notification(p_notification);
+		} break;
+
 		case NOTIFICATION_APPLICATION_FOCUS_IN:
 		case NOTIFICATION_APPLICATION_FOCUS_OUT: {
+			if (Input::get_singleton()) {
+				Input::get_singleton()->application_focused = p_notification == NOTIFICATION_APPLICATION_FOCUS_IN;
+
+				if (Input::get_singleton()->_should_ignore_joypad_events()) {
+					Input::get_singleton()->release_pressed_events();
+				}
+			}
+
 			// Pass these to nodes, since they are mirrored.
 			get_root()->propagate_notification(p_notification);
 		} break;

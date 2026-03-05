@@ -31,6 +31,7 @@
 #include "core_bind.h"
 #include "core_bind.compat.inc"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/crypto/crypto_core.h"
 #include "core/debugger/engine_debugger.h"
@@ -44,6 +45,8 @@
 #include "core/object/object.h"
 #include "core/os/keyboard.h"
 #include "core/os/main_loop.h"
+#include "core/os/os.h"
+#include "core/os/process_id.h"
 #include "core/os/thread_safe.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/typed_array.h"
@@ -574,7 +577,7 @@ int OS::create_instance(const Vector<String> &p_arguments) {
 	for (const String &arg : p_arguments) {
 		args.push_back(arg);
 	}
-	::OS::ProcessID pid = 0;
+	ProcessID pid = 0;
 	Error err = ::OS::get_singleton()->create_instance(args, &pid);
 	if (err != OK) {
 		return -1;
@@ -595,7 +598,7 @@ int OS::create_process(const String &p_path, const Vector<String> &p_arguments, 
 	for (const String &arg : p_arguments) {
 		args.push_back(arg);
 	}
-	::OS::ProcessID pid = 0;
+	ProcessID pid = 0;
 	Error err = ::OS::get_singleton()->create_process(p_path, args, &pid, p_open_console);
 	if (err != OK) {
 		return -1;

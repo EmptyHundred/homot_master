@@ -32,6 +32,7 @@
 
 #include "core/input/input.h"
 #include "core/math/geometry_2d.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/keyboard.h"
 #include "editor/docks/editor_dock_manager.h"
@@ -127,13 +128,20 @@ void GridMapEditor::_menu_option(int p_option) {
 				paste_indicator.orientation = node->get_orthogonal_index_from_basis(r);
 				_update_paste_indicator();
 			} else if (_has_selection()) {
+				EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+				undo_redo->create_action(TTR("GridMap Rotate"));
+
 				Array cells = _get_selected_cells();
 				for (int i = 0; i < cells.size(); i++) {
 					Vector3i cell = cells[i];
 					r = node->get_basis_with_orthogonal_index(node->get_cell_item_orientation(cell));
 					r.rotate(rotation_axis, rotation_angle);
-					node->set_cell_item(cell, node->get_cell_item(cell), node->get_orthogonal_index_from_basis(r));
+					undo_redo->add_do_method(node, "set_cell_item", cell, node->get_cell_item(cell), node->get_orthogonal_index_from_basis(r));
+					undo_redo->add_undo_method(node, "set_cell_item", cell, node->get_cell_item(cell), node->get_cell_item_orientation(cell));
 				}
+
+				undo_redo->commit_action();
+
 			} else {
 				r = node->get_basis_with_orthogonal_index(cursor_rot);
 				r.rotate(rotation_axis, rotation_angle);
@@ -653,12 +661,12 @@ void GridMapEditor::_update_paste_indicator() {
 		}
 		xf = Transform3D();
 		xf.origin = (paste_indicator.current - paste_indicator.distance_from_cursor + center) * node->get_cell_size();
-		xf.basis = rot * xf.basis;
+		xf.basis = rot;
 		xf.translate_local(item.grid_offset * node->get_cell_size());
 
 		Basis item_rot;
 		item_rot = node->get_basis_with_orthogonal_index(item.orientation);
-		xf.basis = item_rot * xf.basis * node->get_cell_scale();
+		xf.basis *= item_rot * node->get_cell_scale();
 
 		RenderingServer::get_singleton()->instance_set_transform(item.instance, node->get_global_transform() * xf);
 	}
@@ -707,7 +715,26 @@ void GridMapEditor::_do_paste() {
 		orm = rot * orm;
 
 		undo_redo->add_do_method(node, "set_cell_item", position, item.cell_item, node->get_orthogonal_index_from_basis(orm));
-		undo_redo->add_undo_method(node, "set_cell_item", position, node->get_cell_item(position), node->get_cell_item_orientation(position));
+
+		int prev_idx = node->get_cell_item(position);
+		bool used_for_preview = false;
+
+		if (clipboard_is_move && prev_idx == GridMap::INVALID_CELL_ITEM) {
+			// If no cell is present, it could be because it was removed to show it in the preview.
+			// Search through the clipboard to check if one of them was in that same position.
+			for (const ClipboardItem &prev_item : clipboard_items) {
+				Vector3 prev_position = paste_indicator.begin + prev_item.grid_offset;
+				if (position == prev_position) {
+					used_for_preview = true;
+					undo_redo->add_undo_method(node, "set_cell_item", position, prev_item.cell_item, prev_item.orientation);
+					break;
+				}
+			}
+		}
+
+		if (!used_for_preview) {
+			undo_redo->add_undo_method(node, "set_cell_item", position, prev_idx, node->get_cell_item_orientation(position));
+		}
 	}
 
 	if (reselect) {
@@ -1315,8 +1342,8 @@ void GridMapEditor::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_APPLICATION_FOCUS_OUT: {
-			if (input_action == INPUT_PAINT) {
-				// Simulate mouse released event to stop drawing when editor focus exists.
+			if (input_action == INPUT_PAINT || input_action == INPUT_ERASE || input_action == INPUT_SELECT) {
+				// Simulate mouse released event to stop drawing when editor focus exits.
 				Ref<InputEventMouseButton> release;
 				release.instantiate();
 				release->set_button_index(MouseButton::LEFT);
