@@ -47,6 +47,11 @@ void HMSandbox::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_heavy_ops_per_frame", "count"), &HMSandbox::set_heavy_ops_per_frame);
 	ClassDB::bind_method(D_METHOD("reset_frame_counters"), &HMSandbox::reset_frame_counters);
 
+	ClassDB::bind_method(D_METHOD("set_profiler_enabled", "enabled"), &HMSandbox::set_profiler_enabled);
+	ClassDB::bind_method(D_METHOD("is_profiler_enabled"), &HMSandbox::is_profiler_enabled);
+
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "profiler_enabled"), "set_profiler_enabled", "is_profiler_enabled");
+
 	ClassDB::bind_method(D_METHOD("get_last_error"), &HMSandbox::get_last_error);
 	ClassDB::bind_method(D_METHOD("get_all_errors"), &HMSandbox::get_all_errors);
 	ClassDB::bind_method(D_METHOD("get_error_report_markdown"), &HMSandbox::get_error_report_markdown);
@@ -56,15 +61,7 @@ void HMSandbox::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_local_classes"), &HMSandbox::get_local_classes);
 	ClassDB::bind_method(D_METHOD("has_script_path", "path"), &HMSandbox::has_script_path);
 	ClassDB::bind_method(D_METHOD("get_script_path_for_class", "class_name"), &HMSandbox::get_script_path_for_class);
-
-	// ClassDB::bind_method(D_METHOD("get_dependency_script", "path"), &HMSandbox::get_dependency_script);
-
-	// ClassDB::bind_method(D_METHOD("resolve_dependencies"), &HMSandbox::resolve_dependencies);
-
-	// ClassDB::bind_method(D_METHOD("register_classes"), &HMSandbox::register_classes);
-
-	// ClassDB::bind_method(D_METHOD("configure_script_profiles"), &HMSandbox::configure_script_profiles);
-
+	
 	ClassDB::bind_static_method("HMSandbox", D_METHOD("collect_dependencies", "dir_path"), &HMSandbox::collect_dependencies);
 
 	ClassDB::bind_method(D_METHOD("unload"), &HMSandbox::unload);
@@ -244,6 +241,19 @@ void HMSandbox::set_heavy_ops_per_frame(int p_count) {
 
 void HMSandbox::reset_frame_counters() {
 	get_limiter().reset_frame_counters();
+}
+
+void HMSandbox::set_profiler_enabled(bool p_enabled) {
+	if (profile) {
+		profile->enabled = p_enabled;
+	}
+}
+
+bool HMSandbox::is_profiler_enabled() const {
+	if (profile) {
+		return profile->enabled;
+	}
+	return true; // Default to enabled if no profile
 }
 
 Variant HMSandbox::call_script_function(const Ref<Script> &p_script,

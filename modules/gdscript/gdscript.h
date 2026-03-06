@@ -423,7 +423,7 @@ public:
 	~GDScriptInstance();
 
 	bool is_sandbox_enabled() const { return script->is_sandbox_enabled(); }
-	const String &get_sandbox_profile_id() const { return script->get_sandbox_profile_id(); }
+	String get_sandbox_profile_id() const { return script->get_sandbox_profile_id(); }
 };
 
 class GDScriptLanguage : public ScriptLanguage {

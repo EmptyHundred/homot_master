@@ -127,7 +127,7 @@ static bool _gdscript_sandbox_check_method_bind(GDScriptInstance *p_instance,
 	}
 
 	GDScriptLanguage::SandboxProfile *profile = lang->ensure_sandbox_profile(profile_id);
-	if (!profile) {
+	if (!profile || !profile->enabled) {
 		return false;
 	}
 
@@ -168,11 +168,8 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 	}
 
 	GDScriptLanguage::SandboxProfile *profile = lang->ensure_sandbox_profile(profile_id);
-	if (!profile) {
-		return false;
-	}
-
-	if (!profile->enabled) {
+	
+	if (!profile || !profile->enabled) {
 		return false;
 	}
 

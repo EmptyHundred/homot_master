@@ -16,6 +16,7 @@ struct SandboxProfile {
 	HMSandboxConfig config;
 	HMSandboxLimiter limiter;
 	HMSandboxErrorRegistry errors;
+	bool enabled = true;
 
 	SandboxProfile() {}
 };

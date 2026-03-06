@@ -68,6 +68,9 @@ public:
 	void set_heavy_ops_per_frame(int p_count);
 	void reset_frame_counters();
 
+	void set_profiler_enabled(bool p_enabled);
+	bool is_profiler_enabled() const;
+
 	// 简单入口：在受控环境中调用脚本函数。
 	// 注意：这里只负责限流与错误记录，不拦截脚本内部所有调用。
 	Variant call_script_function(const Ref<Script> &p_script,

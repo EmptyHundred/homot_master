@@ -49,6 +49,13 @@ public:
 	// 清除指定脚本的缓存。
 	void remove_script_cache(const String &p_script_path);
 
+	// 设置/获取默认 profile ("hm_default") 的 enabled 状态。
+	void set_default_profiler_enabled(bool p_enabled);
+	bool is_default_profiler_enabled() const;
+
+	// 获取所有已缓存的脚本资源路径。
+	PackedStringArray get_cached_script_paths() const;
+
 private:
 	// Map from profile_id to sandbox instance
 	HashMap<String, HMSandbox *> profile_to_sandbox;
