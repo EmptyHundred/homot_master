@@ -172,6 +172,10 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 		return false;
 	}
 
+	if (!profile->enabled) {
+		return false;
+	}
+
 	// 获取基类名称
 	StringName class_name;
 	if (p_base->get_type() == Variant::OBJECT) {
