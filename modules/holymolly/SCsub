@@ -8,6 +8,7 @@ env_hmscript = env_modules.Clone()
 
 env_hmscript.add_source_files(env.modules_sources, "*.cpp")
 env_hmscript.add_source_files(env.modules_sources, "hmscript/*.cpp")
+env_hmscript.add_source_files(env.modules_sources, "hmsandbox/*.cpp")
 
 # if env["tests"]:
 #     env_hmscript.add_source_files(env.modules_sources, "tests/*.cpp")

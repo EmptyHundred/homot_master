@@ -40,6 +40,8 @@
 #include "core/object/script_language.h"
 #include "core/templates/rb_set.h"
 
+#include "modules/holymolly/hmsandbox/sandbox_profile.h"
+
 class GDScriptNativeClass : public RefCounted {
 	GDCLASS(GDScriptNativeClass, RefCounted);
 
@@ -347,6 +349,19 @@ public:
 
 	GDScript();
 	~GDScript();
+
+private:
+	bool sandbox_enabled = false;
+	String sandbox_profile_id;
+
+public:
+	void set_sandbox_enabled(bool p_enabled, const String &p_profile_id = String()) {
+		sandbox_enabled = p_enabled;
+		sandbox_profile_id = p_profile_id;
+	}
+	
+	bool is_sandbox_enabled() const { return sandbox_enabled; }
+	String get_sandbox_profile_id() const { return sandbox_profile_id; }
 };
 
 class GDScriptInstance : public ScriptInstance {
@@ -406,6 +421,9 @@ public:
 
 	GDScriptInstance() {}
 	~GDScriptInstance();
+
+	bool is_sandbox_enabled() const { return script->is_sandbox_enabled(); }
+	const String &get_sandbox_profile_id() const { return script->get_sandbox_profile_id(); }
 };
 
 class GDScriptLanguage : public ScriptLanguage {
@@ -663,6 +681,30 @@ public:
 
 	GDScriptLanguage();
 	~GDScriptLanguage();
+
+// <------------------ Sandbox --------------------->
+	// 简单的 GDScript 沙盒 profile：直接复用 HMScript 的配置、限流与错误聚合实现，
+	// 由上层（如 HMScript 或未来的 GDScript 沙盒管理器）按需创建与使用。
+	using SandboxProfile = hmsandbox::SandboxProfile;
+
+private:
+	// 可选沙盒帧回调，由上层（如 HMScript）注册，用于每帧执行限流重置等逻辑。
+	void (*sandbox_frame_callback)(void) = nullptr;
+	HashMap<String, SandboxProfile> sandbox_profiles;
+
+public:
+	
+	// GDScript 沙盒管理 API：允许外部模块基于 ID 获取 / 创建 profile，并查询错误。
+	SandboxProfile *get_sandbox_profile(const String &p_id);
+	SandboxProfile *ensure_sandbox_profile(const String &p_id);
+	void reset_sandbox_profiles_per_frame();
+	Dictionary get_sandbox_errors(const String &p_id) const;
+	String get_sandbox_error_report(const String &p_id) const;
+
+	// 注册一个在每帧调用的沙盒回调（可为 nullptr 表示禁用）。
+	void set_sandbox_frame_callback(void (*p_callback)(void)) { sandbox_frame_callback = p_callback; }
+// <------------------ Sandbox --------------------->
+
 };
 
 class ResourceFormatLoaderGDScript : public ResourceFormatLoader {

@@ -31,8 +31,8 @@
 #include "register_types.h"
 
 #include "hmscript/hmscript_language.h"
-//#include "hmsandbox/sandbox_manager.h"
-//#include "hmsandbox/sandbox_runtime.h"
+#include "hmsandbox/sandbox_manager.h"
+#include "hmsandbox/sandbox_runtime.h"
 
 #include "core/config/engine.h"
 #include "core/io/resource_loader.h"
@@ -44,19 +44,19 @@ Ref<ResourceFormatLoaderHMScript> resource_loader_hm;
 Ref<ResourceFormatSaverHMScript> resource_saver_hm;
 
 namespace hmsandbox {
-// HMSandboxManager *hm_sandbox_manager = nullptr;
+	HMSandboxManager *hm_sandbox_manager = nullptr;
 }
 
 using namespace hmsandbox;
 
 void initialize_holymolly_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
-		// GDREGISTER_CLASS(HMSandbox);
-		// GDREGISTER_CLASS(HMSandboxManager);
+		GDREGISTER_CLASS(HMSandbox);
+		GDREGISTER_CLASS(HMSandboxManager);
 
 		// Create and register the HMSandbox manager singleton
-		// hm_sandbox_manager = memnew(HMSandboxManager);
-		// Engine::get_singleton()->add_singleton(Engine::Singleton("HMSandboxManager", hm_sandbox_manager));
+		hm_sandbox_manager = memnew(HMSandboxManager);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("HMSandboxManager", hm_sandbox_manager));
 
 		script_language_hm = memnew(HMScriptLanguage);
 		ScriptServer::register_language(script_language_hm);
@@ -85,11 +85,11 @@ void uninitialize_holymolly_module(ModuleInitializationLevel p_level) {
 		resource_saver_hm.unref();
 
 		// Unregister and delete the HMSandbox manager singleton
-		// if (hm_sandbox_manager) {
-		// 	Engine::get_singleton()->remove_singleton("HMSandboxManager");
-		// 	memdelete(hm_sandbox_manager);
-		// 	hm_sandbox_manager = nullptr;
-		// }
+		if (hm_sandbox_manager) {
+			Engine::get_singleton()->remove_singleton("HMSandboxManager");
+			memdelete(hm_sandbox_manager);
+			hm_sandbox_manager = nullptr;
+		}
 	}
 }
 

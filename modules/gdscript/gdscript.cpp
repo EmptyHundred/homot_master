@@ -28,6 +28,8 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "core/object/class_db.h"
+
 #include "gdscript.h"
 
 #include "gdscript_analyzer.h"
@@ -1072,6 +1074,9 @@ void GDScript::_get_property_list(List<PropertyInfo> *p_properties) const {
 
 void GDScript::_bind_methods() {
 	ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "new", &GDScript::_new, MethodInfo("new"));
+
+	ClassDB::bind_method(D_METHOD("is_sandbox_enabled"), &GDScript::is_sandbox_enabled);
+	ClassDB::bind_method(D_METHOD("get_sandbox_profile_id"), &GDScript::get_sandbox_profile_id);
 }
 
 void GDScript::set_path_cache(const String &p_path) {
@@ -2894,6 +2899,56 @@ Ref<GDScript> GDScriptLanguage::get_script_by_fully_qualified_name(const String 
 	scr->fully_qualified_name = p_name;
 	return scr;
 }
+
+/*************** SANDBOX ***************/
+GDScriptLanguage::SandboxProfile *GDScriptLanguage::ensure_sandbox_profile(const String &p_id) {
+	HashMap<String, SandboxProfile>::Iterator it = sandbox_profiles.find(p_id);
+	if (it) {
+		return &it->value;
+	}
+
+	SandboxProfile profile;
+	HashMap<String, SandboxProfile>::Iterator inserted = sandbox_profiles.insert(p_id, profile);
+	return &inserted->value;
+}
+
+GDScriptLanguage::SandboxProfile *GDScriptLanguage::get_sandbox_profile(const String &p_id) {
+	HashMap<String, SandboxProfile>::Iterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return nullptr;
+	}
+	return &it->value;
+}
+
+void GDScriptLanguage::reset_sandbox_profiles_per_frame() {
+	for (KeyValue<String, SandboxProfile> &E : sandbox_profiles) {
+		E.value.limiter.reset_frame_counters();
+	}
+}
+
+Dictionary GDScriptLanguage::get_sandbox_errors(const String &p_id) const {
+	Dictionary result;
+
+	HashMap<String, SandboxProfile>::ConstIterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return result;
+	}
+
+	const SandboxProfile &profile = it->value;
+	result["errors"] = profile.errors.get_all_errors();
+	result["last_error"] = profile.errors.get_last_error();
+	return result;
+}
+
+String GDScriptLanguage::get_sandbox_error_report(const String &p_id) const {
+	HashMap<String, SandboxProfile>::ConstIterator it = sandbox_profiles.find(p_id);
+	if (!it) {
+		return String();
+	}
+	return it->value.errors.get_error_report_markdown();
+}
+
+/*************** SANDBOX ***************/
 
 /*************** RESOURCE ***************/
 

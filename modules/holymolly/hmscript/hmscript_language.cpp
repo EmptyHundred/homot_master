@@ -1,24 +1,24 @@
 #include "hmscript_language.h"
 
-//#include "../hmsandbox/sandbox_manager.h"
+#include "modules/holymolly/hmsandbox/sandbox_manager.h"
 
 namespace hmsandbox {
-// 全局 HMSandbox 管理器实例，在 register_types.cpp 中创建。
-//extern HMSandboxManager *hm_sandbox_manager;
+	// 全局 HMSandbox 管理器实例，在 register_types.cpp 中创建。
+	extern HMSandboxManager *hm_sandbox_manager;
 }
 
 using namespace hmsandbox;
 
 static void _hm_sandbox_frame_callback() {
 	// 每帧重置所有活跃沙盒的配额等。
-	// if (hm_sandbox_manager) {
-	// 	hm_sandbox_manager->frame_callback();
-	// }
+	if (hm_sandbox_manager) {
+		hm_sandbox_manager->frame_callback();
+	}
 }
 
-// HMSandboxManager *HMScriptLanguage::get_sandbox_manager() {
-// 	return hm_sandbox_manager;
-// }
+HMSandboxManager *HMScriptLanguage::get_sandbox_manager() {
+	return hm_sandbox_manager;
+}
 
 String HMScriptLanguage::get_name() const {
 	return "HMScript";
@@ -32,7 +32,7 @@ Script *HMScriptLanguage::create_script() const {
 void HMScriptLanguage::init() {
 	// 复用现有 GDScript 运行时时，同时注册沙盒帧回调。
 	if (GDScriptLanguage::get_singleton()) {
-		//GDScriptLanguage::get_singleton()->set_sandbox_frame_callback(_hm_sandbox_frame_callback);
+		GDScriptLanguage::get_singleton()->set_sandbox_frame_callback(_hm_sandbox_frame_callback);
 	}
 }
 
@@ -199,7 +199,7 @@ Ref<Resource> ResourceFormatLoaderHMScript::load(const String &p_path, const Str
 	if (gds.is_valid()) {
 		// 对所有 HMScript 脚本统一使用一个默认的 GDScript 沙盒 profile。
 		// 后续如需支持多 profile，可在此根据路径或上层配置选择不同 ID。
-		//gds->set_sandbox_enabled(true, "hm_default");
+		gds->set_sandbox_enabled(true, "hm_default");
 	}
 
 	return res;
