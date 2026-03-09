@@ -28,6 +28,9 @@ public:
 	// Collect .tscn and .tres files recursively from a directory.
 	static PackedStringArray collect_resource_files(const String &p_dir_path);
 
+	// Collect .gdshader files recursively from a directory.
+	static PackedStringArray collect_shader_files(const String &p_dir_path);
+
 private:
 	struct ResourceRef {
 		String id;

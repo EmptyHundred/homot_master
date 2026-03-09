@@ -151,6 +151,10 @@
 #include "modules/holymolly/hmsandbox/sandbox_manager.h"
 #include "modules/holymolly/hmsandbox/sandbox_runtime.h"
 #include "modules/holymolly/hmsandbox/scene_resource_linter.h"
+#include "servers/rendering/shader_language.h"
+#include "servers/rendering/shader_preprocessor.h"
+#include "servers/rendering/shader_types.h"
+#include "servers/rendering/shader_warnings.h"
 #if defined(TOOLS_ENABLED) && !defined(GDSCRIPT_NO_LSP)
 #include "modules/gdscript/language_server/gdscript_language_server.h"
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
@@ -691,8 +695,11 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("--main-loop <main_loop_name>", "Run a MainLoop specified by its global class name.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--check-only", "Only parse for errors and quit (use with --script).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 #ifdef MODULE_GDSCRIPT_ENABLED
-	print_help_option("--lint-sandbox <dir>", "Lint all GDScript (.hm/.hmc/.gd) files in <dir> as a sandbox sub-project. Use with --path to set the main project.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--lint-sandbox <dir>", "Lint files in <dir> as a sandbox sub-project. By default lints scripts, scenes/resources, and shaders. Use with --path to set the main project.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--lint-json", "Output lint results as JSON (use with --lint-sandbox).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--lint-script", "Enable script linting (.hm/.hmc/.gd). Use with --lint-sandbox.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--lint-scene", "Enable scene/resource linting (.tscn/.tres). Use with --lint-sandbox.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--lint-shader", "Enable shader linting (.gdshader). Use with --lint-sandbox.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 #endif // MODULE_GDSCRIPT_ENABLED
 #endif // defined(OVERRIDE_PATH_ENABLED)
 #ifdef TOOLS_ENABLED
@@ -3905,6 +3912,9 @@ int Main::start() {
 #ifdef MODULE_GDSCRIPT_ENABLED
 	String lint_sandbox_dir;
 	bool lint_json = false;
+	bool lint_script = false;
+	bool lint_scene = false;
+	bool lint_shader = false;
 #endif // MODULE_GDSCRIPT_ENABLED
 
 #ifdef TOOLS_ENABLED
@@ -3939,6 +3949,12 @@ int Main::start() {
 #ifdef MODULE_GDSCRIPT_ENABLED
 		} else if (E->get() == "--lint-json") {
 			lint_json = true;
+		} else if (E->get() == "--lint-script") {
+			lint_script = true;
+		} else if (E->get() == "--lint-scene") {
+			lint_scene = true;
+		} else if (E->get() == "--lint-shader") {
+			lint_shader = true;
 #endif // MODULE_GDSCRIPT_ENABLED
 #ifdef TOOLS_ENABLED
 		} else if (E->get() == "--no-docbase") {
@@ -4076,113 +4092,120 @@ int Main::start() {
 		// Normalize to absolute path.
 		lint_sandbox_dir = lint_da->get_current_dir();
 
-		// Create a temporary sandbox for analysis.
-		hmsandbox::HMSandboxManager *sandbox_mgr = hmsandbox::get_global_sandbox_manager();
-		ERR_FAIL_NULL_V_MSG(sandbox_mgr, EXIT_FAILURE, "--lint-sandbox: HMSandboxManager not available.");
-
-		hmsandbox::HMSandbox *lint_sandbox = memnew(hmsandbox::HMSandbox);
-		String lint_profile_id = hmsandbox::HMSandbox::generate_sandbox_id();
-		lint_sandbox->set_profile_id(lint_profile_id);
-		lint_sandbox->set_name(lint_profile_id);
-		lint_sandbox->set_load_directory(lint_sandbox_dir);
-
-		// Register sandbox so the analyzer can find it via get_sandbox_for_script().
-		sandbox_mgr->register_sandbox(lint_sandbox);
-
-		// Pre-scan and register class names (lightweight, no full compilation).
-		lint_sandbox->register_classes();
-
-		// Collect all script files from the sandbox directory.
-		PackedStringArray script_paths = hmsandbox::HMSandbox::collect_dependencies(lint_sandbox_dir);
+		// If no specific lint flags are set, enable all.
+		if (!lint_script && !lint_scene && !lint_shader) {
+			lint_script = true;
+			lint_scene = true;
+			lint_shader = true;
+		}
 
 		int total_errors = 0;
 		int total_warnings = 0;
-		int total_files = script_paths.size();
+		int total_files = 0;
 
 		String json_output;
 		if (lint_json) {
 			json_output = "[\n";
 		}
 
-		for (int i = 0; i < script_paths.size(); i++) {
-			const String &script_path = script_paths[i];
+		// Sandbox setup is needed for script linting (class resolution).
+		hmsandbox::HMSandboxManager *sandbox_mgr = hmsandbox::get_global_sandbox_manager();
+		hmsandbox::HMSandbox *lint_sandbox = nullptr;
+		if (lint_script) {
+			ERR_FAIL_NULL_V_MSG(sandbox_mgr, EXIT_FAILURE, "--lint-sandbox: HMSandboxManager not available.");
 
-			// Read the source code.
-			String source = FileAccess::get_file_as_string(script_path);
-			if (source.is_empty() && !FileAccess::exists(script_path)) {
-				OS::get_singleton()->printerr("Warning: Could not read file: %s\n", script_path.utf8().get_data());
-				continue;
-			}
+			lint_sandbox = memnew(hmsandbox::HMSandbox);
+			String lint_profile_id = hmsandbox::HMSandbox::generate_sandbox_id();
+			lint_sandbox->set_profile_id(lint_profile_id);
+			lint_sandbox->set_name(lint_profile_id);
+			lint_sandbox->set_load_directory(lint_sandbox_dir);
 
-			// Use GDScriptLanguage::validate() for full analysis with error/warning output.
-			List<ScriptLanguage::ScriptError> errors;
-			List<ScriptLanguage::Warning> warnings;
+			sandbox_mgr->register_sandbox(lint_sandbox);
+			lint_sandbox->register_classes();
+		}
 
-			GDScriptLanguage::get_singleton()->validate(source, script_path, nullptr, &errors, &warnings, nullptr);
+		// ---- Script linting (.hm/.hmc/.gd) ----
+		if (lint_script) {
+			PackedStringArray script_paths = hmsandbox::HMSandbox::collect_dependencies(lint_sandbox_dir);
+			total_files += script_paths.size();
 
-			// Make path relative to lint dir for cleaner output.
-			String display_path = script_path;
-			if (display_path.begins_with(lint_sandbox_dir)) {
-				display_path = display_path.substr(lint_sandbox_dir.length());
-				if (display_path.begins_with("/") || display_path.begins_with("\\")) {
-					display_path = display_path.substr(1);
+			for (int i = 0; i < script_paths.size(); i++) {
+				const String &script_path = script_paths[i];
+
+				String source = FileAccess::get_file_as_string(script_path);
+				if (source.is_empty() && !FileAccess::exists(script_path)) {
+					OS::get_singleton()->printerr("Warning: Could not read file: %s\n", script_path.utf8().get_data());
+					continue;
 				}
-			}
 
-			if (lint_json) {
-				// JSON output for each file with issues.
-				if (!errors.is_empty() || !warnings.is_empty()) {
-					if (total_errors > 0 || total_warnings > 0) {
-						json_output += ",\n";
+				List<ScriptLanguage::ScriptError> errors;
+				List<ScriptLanguage::Warning> warnings;
+
+				GDScriptLanguage::get_singleton()->validate(source, script_path, nullptr, &errors, &warnings, nullptr);
+
+				String display_path = script_path;
+				if (display_path.begins_with(lint_sandbox_dir)) {
+					display_path = display_path.substr(lint_sandbox_dir.length());
+					if (display_path.begins_with("/") || display_path.begins_with("\\")) {
+						display_path = display_path.substr(1);
 					}
-					json_output += "  {\n";
-					json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+				}
 
-					json_output += "    \"errors\": [";
-					bool first = true;
+				if (lint_json) {
+					if (!errors.is_empty() || !warnings.is_empty()) {
+						if (total_errors > 0 || total_warnings > 0) {
+							json_output += ",\n";
+						}
+						json_output += "  {\n";
+						json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+
+						json_output += "    \"errors\": [";
+						bool first = true;
+						for (const ScriptLanguage::ScriptError &e : errors) {
+							if (!first) {
+								json_output += ",";
+							}
+							json_output += "\n      {\"line\": " + itos(e.line) + ", \"column\": " + itos(e.column) + ", \"message\": \"" + e.message.json_escape() + "\"}";
+							first = false;
+						}
+						json_output += "\n    ],\n";
+
+						json_output += "    \"warnings\": [";
+						first = true;
+						for (const ScriptLanguage::Warning &w : warnings) {
+							if (!first) {
+								json_output += ",";
+							}
+							json_output += "\n      {\"line\": " + itos(w.start_line) + ", \"code\": \"" + w.string_code.json_escape() + "\", \"message\": \"" + w.message.json_escape() + "\"}";
+							first = false;
+						}
+						json_output += "\n    ]\n";
+						json_output += "  }";
+					}
+				} else {
 					for (const ScriptLanguage::ScriptError &e : errors) {
-						if (!first) {
-							json_output += ",";
-						}
-						json_output += "\n      {\"line\": " + itos(e.line) + ", \"column\": " + itos(e.column) + ", \"message\": \"" + e.message.json_escape() + "\"}";
-						first = false;
+						OS::get_singleton()->print("ERROR: %s:%d:%d: %s\n",
+								display_path.utf8().get_data(),
+								e.line, e.column,
+								e.message.utf8().get_data());
 					}
-					json_output += "\n    ],\n";
-
-					json_output += "    \"warnings\": [";
-					first = true;
 					for (const ScriptLanguage::Warning &w : warnings) {
-						if (!first) {
-							json_output += ",";
-						}
-						json_output += "\n      {\"line\": " + itos(w.start_line) + ", \"code\": \"" + w.string_code.json_escape() + "\", \"message\": \"" + w.message.json_escape() + "\"}";
-						first = false;
+						OS::get_singleton()->print("WARNING: %s:%d: [%s] %s\n",
+								display_path.utf8().get_data(),
+								w.start_line,
+								w.string_code.utf8().get_data(),
+								w.message.utf8().get_data());
 					}
-					json_output += "\n    ]\n";
-					json_output += "  }";
 				}
-			} else {
-				// Text output.
-				for (const ScriptLanguage::ScriptError &e : errors) {
-					OS::get_singleton()->print("ERROR: %s:%d:%d: %s\n",
-							display_path.utf8().get_data(),
-							e.line, e.column,
-							e.message.utf8().get_data());
-				}
-				for (const ScriptLanguage::Warning &w : warnings) {
-					OS::get_singleton()->print("WARNING: %s:%d: [%s] %s\n",
-							display_path.utf8().get_data(),
-							w.start_line,
-							w.string_code.utf8().get_data(),
-							w.message.utf8().get_data());
-				}
-			}
 
-			total_errors += errors.size();
-			total_warnings += warnings.size();
+				total_errors += errors.size();
+				total_warnings += warnings.size();
+			}
 		}
 
 		// Lint .tscn and .tres resource files.
+		// ---- Scene/resource linting (.tscn/.tres) ----
+		if (lint_scene) {
 		PackedStringArray resource_paths = SceneResourceLinter::collect_resource_files(lint_sandbox_dir);
 		total_files += resource_paths.size();
 
@@ -4250,6 +4273,165 @@ int Main::start() {
 			total_errors += res_errors.size();
 			total_warnings += res_warnings.size();
 		}
+		} // lint_scene
+
+		// ---- Shader linting (.gdshader) ----
+		if (lint_shader) {
+		PackedStringArray shader_paths = SceneResourceLinter::collect_shader_files(lint_sandbox_dir);
+		total_files += shader_paths.size();
+
+		for (int i = 0; i < shader_paths.size(); i++) {
+			const String &shader_path = shader_paths[i];
+
+			String source = FileAccess::get_file_as_string(shader_path);
+			if (source.is_empty() && !FileAccess::exists(shader_path)) {
+				OS::get_singleton()->printerr("Warning: Could not read file: %s\n", shader_path.utf8().get_data());
+				continue;
+			}
+
+			String display_path = shader_path;
+			if (display_path.begins_with(lint_sandbox_dir)) {
+				display_path = display_path.substr(lint_sandbox_dir.length());
+				if (display_path.begins_with("/") || display_path.begins_with("\\")) {
+					display_path = display_path.substr(1);
+				}
+			}
+
+			int shader_errors = 0;
+			int shader_warnings = 0;
+
+			// Preprocess (handles #include, #define, etc.).
+			ShaderPreprocessor preprocessor;
+			String code_pp;
+			String preprocess_error;
+			List<ShaderPreprocessor::FilePosition> preprocess_err_positions;
+			Error shader_err = preprocessor.preprocess(source, shader_path, code_pp, &preprocess_error, &preprocess_err_positions);
+
+			if (shader_err != OK) {
+				// Preprocessor error.
+				int err_line = preprocess_err_positions.is_empty() ? 1 : preprocess_err_positions.front()->get().line;
+				if (lint_json) {
+					if (total_errors > 0 || total_warnings > 0) {
+						json_output += ",\n";
+					}
+					json_output += "  {\n";
+					json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+					json_output += "    \"errors\": [\n";
+					json_output += "      {\"line\": " + itos(err_line) + ", \"column\": 0, \"message\": \"" + preprocess_error.json_escape() + "\"}";
+					json_output += "\n    ],\n";
+					json_output += "    \"warnings\": [\n    ]\n";
+					json_output += "  }";
+				} else {
+					OS::get_singleton()->print("ERROR: %s:%d: %s\n",
+							display_path.utf8().get_data(), err_line,
+							preprocess_error.utf8().get_data());
+				}
+				total_errors++;
+				continue;
+			}
+
+			// Detect shader mode and build compile info.
+			String shader_type_str = ShaderLanguage::get_shader_type(code_pp);
+
+			RS::ShaderMode shader_mode = RS::SHADER_SPATIAL;
+			if (shader_type_str == "canvas_item") {
+				shader_mode = RS::SHADER_CANVAS_ITEM;
+			} else if (shader_type_str == "particles") {
+				shader_mode = RS::SHADER_PARTICLES;
+			} else if (shader_type_str == "sky") {
+				shader_mode = RS::SHADER_SKY;
+			} else if (shader_type_str == "fog") {
+				shader_mode = RS::SHADER_FOG;
+			}
+
+			ShaderLanguage sl;
+#ifdef DEBUG_ENABLED
+			sl.enable_warning_checking(true);
+			sl.set_warning_flags(ShaderWarning::CodeFlags(
+					ShaderWarning::FLOAT_COMPARISON_FLAG |
+					ShaderWarning::UNUSED_CONSTANT_FLAG |
+					ShaderWarning::UNUSED_FUNCTION_FLAG |
+					ShaderWarning::UNUSED_STRUCT_FLAG |
+					ShaderWarning::UNUSED_UNIFORM_FLAG |
+					ShaderWarning::UNUSED_VARYING_FLAG |
+					ShaderWarning::UNUSED_LOCAL_VARIABLE_FLAG |
+					ShaderWarning::FORMATTING_ERROR_FLAG |
+					ShaderWarning::DEVICE_LIMIT_EXCEEDED_FLAG));
+#endif
+
+			ShaderLanguage::ShaderCompileInfo comp_info;
+			if (ShaderTypes::get_singleton()) {
+				comp_info.functions = ShaderTypes::get_singleton()->get_functions(shader_mode);
+				comp_info.render_modes = ShaderTypes::get_singleton()->get_modes(shader_mode);
+				comp_info.stencil_modes = ShaderTypes::get_singleton()->get_stencil_modes(shader_mode);
+				comp_info.shader_types = ShaderTypes::get_singleton()->get_types();
+			}
+
+			Error compile_err = sl.compile(code_pp, comp_info);
+
+			// Collect errors.
+			if (compile_err != OK) {
+				int err_line = sl.get_error_line();
+				String err_msg = sl.get_error_text();
+				shader_errors++;
+
+				if (!lint_json) {
+					OS::get_singleton()->print("ERROR: %s:%d: %s\n",
+							display_path.utf8().get_data(), err_line,
+							err_msg.utf8().get_data());
+				}
+			}
+
+			// Collect warnings.
+#ifdef DEBUG_ENABLED
+			List<ShaderWarning> warn_list;
+			for (List<ShaderWarning>::Element *E = sl.get_warnings_ptr(); E; E = E->next()) {
+				warn_list.push_back(E->get());
+				shader_warnings++;
+
+				if (!lint_json) {
+					OS::get_singleton()->print("WARNING: %s:%d: [%s] %s\n",
+							display_path.utf8().get_data(),
+							E->get().get_line(),
+							E->get().get_name().utf8().get_data(),
+							E->get().get_message().utf8().get_data());
+				}
+			}
+#endif
+
+			// JSON output.
+			if (lint_json && (shader_errors > 0 || shader_warnings > 0)) {
+				if (total_errors > 0 || total_warnings > 0) {
+					json_output += ",\n";
+				}
+				json_output += "  {\n";
+				json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+
+				json_output += "    \"errors\": [";
+				if (compile_err != OK) {
+					json_output += "\n      {\"line\": " + itos(sl.get_error_line()) + ", \"column\": 0, \"message\": \"" + sl.get_error_text().json_escape() + "\"}";
+				}
+				json_output += "\n    ],\n";
+
+				json_output += "    \"warnings\": [";
+#ifdef DEBUG_ENABLED
+				bool first_w = true;
+				for (const ShaderWarning &w : warn_list) {
+					if (!first_w) {
+						json_output += ",";
+					}
+					json_output += "\n      {\"line\": " + itos(w.get_line()) + ", \"code\": \"" + w.get_name().json_escape() + "\", \"message\": \"" + w.get_message().json_escape() + "\"}";
+					first_w = false;
+				}
+#endif
+				json_output += "\n    ]\n";
+				json_output += "  }";
+			}
+
+			total_errors += shader_errors;
+			total_warnings += shader_warnings;
+		}
+		} // lint_shader
 
 		if (lint_json) {
 			json_output += "\n]\n";
@@ -4269,8 +4451,10 @@ int Main::start() {
 		}
 
 		// Cleanup.
-		sandbox_mgr->unregister_sandbox(lint_sandbox);
-		memdelete(lint_sandbox);
+		if (lint_sandbox) {
+			sandbox_mgr->unregister_sandbox(lint_sandbox);
+			memdelete(lint_sandbox);
+		}
 
 		return total_errors > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 	}

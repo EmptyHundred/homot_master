@@ -1,18 +1,37 @@
 # Sandbox Linter (`--lint-sandbox`)
 
 The sandbox linter performs static analysis on all files within a sandbox directory,
-covering GDScript files (`.hm`, `.hmc`) as well as scene and resource files
-(`.tscn`, `.tres`).
+covering GDScript files (`.hm`, `.hmc`), scene and resource files (`.tscn`, `.tres`),
+and shader files (`.gdshader`).
 
 ## Usage
 
 ```bash
-homot --lint-sandbox <directory>            # Text output
+homot --lint-sandbox <directory>            # Lint everything (default)
 homot --lint-sandbox <directory> --lint-json # JSON output
+
+# Selective linting -- only run the specified linters:
+homot --lint-sandbox <directory> --lint-script              # Scripts only
+homot --lint-sandbox <directory> --lint-scene               # Scenes/resources only
+homot --lint-sandbox <directory> --lint-shader              # Shaders only
+homot --lint-sandbox <directory> --lint-scene --lint-shader  # Combine any flags
 ```
 
 **Exit code:** `0` (PASS) if no errors, `1` (FAIL) if any errors found.
 Warnings do not affect the exit code.
+
+### Command-line flags
+
+| Flag | Description |
+|------|-------------|
+| `--lint-sandbox <dir>` | **Required.** Directory to lint. |
+| `--lint-json` | Output results as JSON instead of text. |
+| `--lint-script` | Enable script linting (`.hm`, `.hmc`, `.gd`). |
+| `--lint-scene` | Enable scene/resource linting (`.tscn`, `.tres`). |
+| `--lint-shader` | Enable shader linting (`.gdshader`). |
+
+If none of `--lint-script`, `--lint-scene`, `--lint-shader` are specified,
+**all three** are enabled by default.
 
 ## GDScript Linting (`.hm`, `.hmc`)
 
@@ -79,6 +98,47 @@ Property validation is skipped in these cases to avoid false positives:
 - Node has an `instance` or `instance_placeholder` (inherited properties unknown)
 - Property name starts with `metadata/` or `editor/` (dynamic/editor-only)
 
+## GDShader Linting (`.gdshader`)
+
+Uses the engine's `ShaderLanguage` compiler for full static analysis of shader
+files. The pipeline mirrors what the editor does:
+
+1. **Preprocessing** -- `ShaderPreprocessor` handles `#include`, `#define`,
+   `#if`/`#ifdef` directives. Errors at this stage (e.g. missing include files,
+   unterminated `#if`) are reported immediately.
+
+2. **Mode detection** -- The `shader_type` declaration (`spatial`, `canvas_item`,
+   `particles`, `sky`, `fog`) is parsed to select the correct set of built-in
+   variables, functions, and render modes for validation.
+
+3. **Compilation** -- `ShaderLanguage::compile()` performs full parsing and
+   semantic analysis against the detected shader mode.
+
+### Errors (compilation failures)
+
+| Check | Description |
+|-------|-------------|
+| Syntax errors | Unexpected tokens, missing semicolons, unclosed braces. |
+| Unknown identifiers | Undefined variables, functions, or types. |
+| Type mismatches | Assigning `vec3` to `float`, wrong argument types, etc. |
+| Invalid built-in usage | Writing to read-only built-ins, wrong stage access. |
+| Invalid render modes | Unknown or conflicting render mode declarations. |
+| Preprocessor errors | Bad `#include` paths, unterminated `#if` blocks. |
+
+### Warnings (code quality)
+
+| Code | Description |
+|------|-------------|
+| `FLOAT_COMPARISON` | Direct `==` / `!=` on floats (use approximate comparison). |
+| `UNUSED_CONSTANT` | Declared constant never referenced. |
+| `UNUSED_FUNCTION` | Declared function never called. |
+| `UNUSED_STRUCT` | Declared struct never used. |
+| `UNUSED_UNIFORM` | Declared uniform never sampled/read. |
+| `UNUSED_VARYING` | Declared varying never written or read. |
+| `UNUSED_LOCAL_VARIABLE` | Local variable declared but never used. |
+| `FORMATTING_ERROR` | Code formatting issues. |
+| `DEVICE_LIMIT_EXCEEDED` | Exceeds GPU device limits (e.g. too many varyings). |
+
 ## Output Formats
 
 ### Text (default)
@@ -87,12 +147,15 @@ Property validation is skipped in these cases to avoid false positives:
 ERROR: player.tscn:5: Unknown node type 'CharacterBdy2D'.
 WARNING: player.tscn:8: Property 'speeed' not found in class 'Node2D'.
 ERROR: main.tscn:12: ExtResource references undeclared id '3'.
+ERROR: effect.gdshader:4: Unknown identifier in expression: 'undefined_var'.
+WARNING: effect.gdshader:10: [FLOAT_COMPARISON] Direct floating-point comparison ...
+WARNING: effect.gdshader:4: [UNUSED_UNIFORM] The uniform 'unused_texture' is declared but never used.
 
 --- Lint Summary ---
 Directory: /path/to/sandbox
 Files scanned: 15
-Errors: 2
-Warnings: 1
+Errors: 3
+Warnings: 3
 Result: FAIL
 ```
 
@@ -114,8 +177,9 @@ Result: FAIL
 
 ## Common AI-Generated File Errors Detected
 
-The linter is particularly effective at catching mistakes common in AI-generated
-`.tscn` / `.tres` files:
+The linter is particularly effective at catching mistakes common in AI-generated files.
+
+### `.tscn` / `.tres`
 
 - **Typos in class names**: `Characterbody2D` instead of `CharacterBody2D`
 - **Wrong resource reference IDs**: `ExtResource("5")` when only IDs 1-3 exist
@@ -124,3 +188,12 @@ The linter is particularly effective at catching mistakes common in AI-generated
 - **Wrong property names**: `texure` instead of `texture` on a `Sprite2D`
 - **Format errors**: Malformed values, unclosed brackets, bad syntax
 - **Structural mistakes**: `[node]` tags in `.tres` files, wrong section ordering
+
+### `.gdshader`
+
+- **Undefined variables/functions**: Using names that don't exist in the shader language
+- **Type errors**: Assigning incompatible types (`vec3` to `float`)
+- **Wrong built-in names**: `ALBEO` instead of `ALBEDO`, `FRACOORD` instead of `FRAGCOORD`
+- **Invalid shader_type**: Misspelled mode like `spatiel` instead of `spatial`
+- **Syntax errors**: Missing semicolons, unmatched braces, wrong operators
+- **Wrong stage access**: Using `VERTEX` in `fragment()` or vice versa

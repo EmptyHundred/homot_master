@@ -147,6 +147,50 @@ PackedStringArray SceneResourceLinter::collect_resource_files(const String &p_di
 	return result;
 }
 
+static void _collect_shader_files_recursive(const String &p_directory, PackedStringArray &r_result) {
+	Ref<DirAccess> dir = DirAccess::open(p_directory);
+	if (dir.is_null()) {
+		return;
+	}
+
+	dir->list_dir_begin();
+	String file_name = dir->get_next();
+
+	while (!file_name.is_empty()) {
+		if (file_name.begins_with(".")) {
+			file_name = dir->get_next();
+			continue;
+		}
+
+		String full_path = p_directory;
+		if (!full_path.ends_with("/")) {
+			full_path += "/";
+		}
+		full_path += file_name;
+
+		if (dir->current_is_dir()) {
+			_collect_shader_files_recursive(full_path, r_result);
+		} else {
+			if (file_name.ends_with(".gdshader")) {
+				r_result.push_back(full_path);
+			}
+		}
+
+		file_name = dir->get_next();
+	}
+
+	dir->list_dir_end();
+}
+
+PackedStringArray SceneResourceLinter::collect_shader_files(const String &p_dir_path) {
+	PackedStringArray result;
+	if (p_dir_path.is_empty()) {
+		return result;
+	}
+	_collect_shader_files_recursive(p_dir_path, result);
+	return result;
+}
+
 // ---------------------------------------------------------------------------
 // Main validation entry point
 // ---------------------------------------------------------------------------
