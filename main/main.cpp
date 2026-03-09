@@ -150,6 +150,7 @@
 #include "modules/gdscript/gdscript_warning.h"
 #include "modules/holymolly/hmsandbox/sandbox_manager.h"
 #include "modules/holymolly/hmsandbox/sandbox_runtime.h"
+#include "modules/holymolly/hmsandbox/scene_resource_linter.h"
 #if defined(TOOLS_ENABLED) && !defined(GDSCRIPT_NO_LSP)
 #include "modules/gdscript/language_server/gdscript_language_server.h"
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
@@ -4179,6 +4180,75 @@ int Main::start() {
 
 			total_errors += errors.size();
 			total_warnings += warnings.size();
+		}
+
+		// Lint .tscn and .tres resource files.
+		PackedStringArray resource_paths = SceneResourceLinter::collect_resource_files(lint_sandbox_dir);
+		total_files += resource_paths.size();
+
+		for (int i = 0; i < resource_paths.size(); i++) {
+			const String &res_path = resource_paths[i];
+
+			List<SceneResourceLinter::LintError> res_errors;
+			List<SceneResourceLinter::LintError> res_warnings;
+			SceneResourceLinter::validate(res_path, res_errors, res_warnings);
+
+			String display_path = res_path;
+			if (display_path.begins_with(lint_sandbox_dir)) {
+				display_path = display_path.substr(lint_sandbox_dir.length());
+				if (display_path.begins_with("/") || display_path.begins_with("\\")) {
+					display_path = display_path.substr(1);
+				}
+			}
+
+			if (lint_json) {
+				if (!res_errors.is_empty() || !res_warnings.is_empty()) {
+					if (total_errors > 0 || total_warnings > 0) {
+						json_output += ",\n";
+					}
+					json_output += "  {\n";
+					json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+
+					json_output += "    \"errors\": [";
+					bool first = true;
+					for (const SceneResourceLinter::LintError &e : res_errors) {
+						if (!first) {
+							json_output += ",";
+						}
+						json_output += "\n      {\"line\": " + itos(e.line) + ", \"column\": " + itos(e.column) + ", \"message\": \"" + e.message.json_escape() + "\"}";
+						first = false;
+					}
+					json_output += "\n    ],\n";
+
+					json_output += "    \"warnings\": [";
+					first = true;
+					for (const SceneResourceLinter::LintError &w : res_warnings) {
+						if (!first) {
+							json_output += ",";
+						}
+						json_output += "\n      {\"line\": " + itos(w.line) + ", \"message\": \"" + w.message.json_escape() + "\"}";
+						first = false;
+					}
+					json_output += "\n    ]\n";
+					json_output += "  }";
+				}
+			} else {
+				for (const SceneResourceLinter::LintError &e : res_errors) {
+					OS::get_singleton()->print("ERROR: %s:%d: %s\n",
+							display_path.utf8().get_data(),
+							e.line,
+							e.message.utf8().get_data());
+				}
+				for (const SceneResourceLinter::LintError &w : res_warnings) {
+					OS::get_singleton()->print("WARNING: %s:%d: %s\n",
+							display_path.utf8().get_data(),
+							w.line,
+							w.message.utf8().get_data());
+				}
+			}
+
+			total_errors += res_errors.size();
+			total_warnings += res_warnings.size();
 		}
 
 		if (lint_json) {
