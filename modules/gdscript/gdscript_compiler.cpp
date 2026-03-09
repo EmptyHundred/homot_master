@@ -39,6 +39,9 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 
+#include "modules/holymolly/hmsandbox/sandbox_manager.h"
+#include "modules/holymolly/hmsandbox/sandbox_runtime.h"
+
 #include "scene/scene_string_names.h"
 
 bool GDScriptCompiler::_is_class_member_property(CodeGen &codegen, const StringName &p_name) {
@@ -429,6 +432,22 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 							int idx = GDScriptLanguage::get_singleton()->get_global_map()[identifier];
 							Variant global = GDScriptLanguage::get_singleton()->get_global_array()[idx];
 							return codegen.add_constant(global);
+						}
+					}
+
+					// Try sandbox local classes.
+					hmsandbox::HMSandboxManager *manager = hmsandbox::get_global_sandbox_manager();
+					if (manager) {
+						hmsandbox::HMSandbox *sandbox = manager->find_sandbox_by_script_path(main_script->path);
+						if (sandbox && sandbox->has_script_path(main_script->path) && sandbox->has_local_class(identifier)) {
+							String class_path = sandbox->get_script_path_for_class(identifier);
+							if (!class_path.is_empty()) {
+								Error err = OK;
+								Ref<Resource> res = GDScriptCache::get_shallow_script(class_path, err);
+								if (err == OK && res.is_valid()) {
+									return codegen.add_constant(res);
+								}
+							}
 						}
 					}
 
