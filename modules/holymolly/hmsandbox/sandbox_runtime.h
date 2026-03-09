@@ -101,12 +101,12 @@ public:
 	Ref<GDScript> get_dependency_script(const String &p_path) const;
 
 	// Instance method: Resolve and populate dependencies by scanning the load directory
-	// recursively for all .hm and .hmc files. Stores results in the dependencies property.
+	// recursively for all .hm and .hmc files. Initializes dependency map with empty Ref<GDScript>.
 	void resolve_dependencies();
 
-	// Apply sandbox profile to all loaded dependency scripts
-	// Iterates through dependencies and sets sandbox_enabled and profile_id for each loaded script
-	void configure_script_profiles();
+	// Load the actual GDScript resources for all scripts in the dependency map
+	// Iterates through dependency keys and loads the resources from disk
+	void load_script_resources();
 
 	// Pre-scan script files and register class names BEFORE loading scripts
 	// Uses lightweight parsing to extract class_name without full compilation

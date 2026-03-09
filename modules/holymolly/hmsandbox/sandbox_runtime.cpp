@@ -430,68 +430,53 @@ void HMSandbox::resolve_dependencies() {
 		return;
 	}
 
-	// Get all registered class names from class_registry (populated by register_classes())
-	PackedStringArray class_names = class_registry.get_all_class_names();
+	// Collect all .hm and .hmc script paths from the directory
+	PackedStringArray script_paths = collect_dependencies(load_directory);
+
+	// Initialize the dependency map with empty Ref<GDScript> for all scripts
+	// This ensures ALL scripts are tracked, including nameless classes
+	for (int i = 0; i < script_paths.size(); i++) {
+		dependencies.insert(script_paths[i], Ref<GDScript>());
+	}
+
+	print_verbose(vformat(
+			"Sandbox dependency resolution: Initialized %d script dependencies",
+			script_paths.size()));
+}
+
+void HMSandbox::load_script_resources() {
+	if (dependencies.is_empty()) {
+		WARN_PRINT("Cannot load script resources: no dependencies to load.");
+		return;
+	}
+
 	int loaded_count = 0;
+	int total_count = dependencies.size();
 
-	// Iterate through registered classes and load their scripts
-	for (int i = 0; i < class_names.size(); i++) {
-		const String &class_name = class_names[i];
+	// Iterate through all dependency paths and load the actual GDScript resources
+	for (KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		const String &script_path = E.key;
 
-		// Get the ClassInfo to retrieve script_path
-		SandboxClassRegistry::ClassInfo info = class_registry.get_class_info(class_name);
-		const String &script_path = info.script_path;
-
-		if (script_path.is_empty()) {
-			continue; // Skip if no script path
-		}
-
-		// Pre-load the script
+		// Load the script resource
 		Ref<GDScript> script = ResourceLoader::load(
 				script_path,
 				"",
 				ResourceFormatLoader::CACHE_MODE_REUSE);
 
 		if (script.is_valid()) {
-			dependencies.insert(script_path, script);
+			E.value = script;
+			script->set_sandbox_enabled(true, profile_id);
 			loaded_count++;
 		} else {
 			WARN_PRINT(vformat("Failed to load dependency script: %s", script_path));
-			// Still insert with null to track that we attempted to load it
-			dependencies.insert(script_path, Ref<GDScript>());
+			// Keep the null reference to track that we attempted to load it
 		}
 	}
 
 	print_verbose(vformat(
-			"Sandbox dependency resolution: Loaded %d/%d scripts from class registry",
+			"Sandbox script loading: Loaded %d/%d scripts",
 			loaded_count,
-			class_names.size()));
-}
-
-void HMSandbox::configure_script_profiles() {
-	if (profile_id.is_empty()) {
-		WARN_PRINT("Cannot configure script profiles: profile_id is empty.");
-		return;
-	}
-
-	int configured_count = 0;
-
-	for (KeyValue<String, Ref<GDScript>> &E : dependencies) {
-		// Skip scripts that failed to load
-		if (E.value.is_null()) {
-			continue;
-		}
-
-		// Update the script's sandbox profile_id from "hm_default" to this sandbox's unique ID
-		E.value->set_sandbox_enabled(true, profile_id);
-		configured_count++;
-	}
-
-	print_verbose(vformat(
-			"Sandbox '%s': Configured sandbox profile for %d/%d dependency scripts",
-			profile_id,
-			configured_count,
-			dependencies.size()));
+			total_count));
 }
 
 String HMSandbox::generate_sandbox_id() {
@@ -524,8 +509,8 @@ String HMSandbox::generate_sandbox_id() {
 void HMSandbox::register_classes() {
 	class_registry.clear();
 
-	if (load_directory.is_empty()) {
-		WARN_PRINT("Cannot prescan classes: load_directory is empty.");
+	if (dependencies.is_empty()) {
+		WARN_PRINT("Cannot prescan classes: dependencies map is empty.");
 		return;
 	}
 
@@ -535,14 +520,13 @@ void HMSandbox::register_classes() {
 		return;
 	}
 
-	// Collect all script paths without loading them
-	PackedStringArray script_paths = collect_dependencies(load_directory);
 	int registered_count = 0;
+	int total_count = dependencies.size();
 
-	// Pre-scan each script file to extract class_name
+	// Iterate through dependency map keys (script paths) and extract class_name
 	// This uses lightweight parsing - doesn't require full compilation
-	for (int i = 0; i < script_paths.size(); i++) {
-		const String &script_path = script_paths[i];
+	for (const KeyValue<String, Ref<GDScript>> &E : dependencies) {
+		const String &script_path = E.key;
 
 		// Extract class info using get_global_class_name (lightweight scan)
 		String base_type, icon_path;
@@ -585,7 +569,7 @@ void HMSandbox::register_classes() {
 			"Sandbox '%s': Pre-registered %d classes from %d script files",
 			profile_id,
 			registered_count,
-			script_paths.size()));
+			total_count));
 }
 
 HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filename) {
@@ -613,18 +597,19 @@ HMSandbox *HMSandbox::load(const String &p_directory, const String &p_tscn_filen
 		hm_sandbox_manager->register_sandbox(sandbox);
 	}
 
-	// Pre-scan all script files and register class names
+	// Step 1: Collect all script paths and initialize dependency map with empty Ref<GDScript>
+	// This ensures ALL scripts (including nameless classes) are tracked in the dependency map
+	sandbox->resolve_dependencies();
+
+	// Step 2: Pre-scan all script files (from dependency map keys) and register class names
 	// This uses lightweight parsing to extract class_name WITHOUT loading scripts
 	// Populates the registry so scripts can find base classes during compilation
 	sandbox->register_classes();
 
-	// Load all scripts - they can find base classes in registry
+	// Step 3: Load the actual GDScript resources for all scripts in the dependency map
+	// Iterates through dependency keys and loads resources from disk
 	// Scripts will compile successfully because registry is already populated
-	sandbox->resolve_dependencies();
-
-	// Configure loaded scripts with sandbox profile_id
-	// Sets profile_id on each script so analyzer can identify sandbox membership
-	sandbox->configure_script_profiles();
+	sandbox->load_script_resources();
 
 	// NOW load the scene - scripts are already loaded, configured, and registered
 	Error err = OK;

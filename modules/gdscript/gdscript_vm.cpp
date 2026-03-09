@@ -45,6 +45,7 @@
 
 // 核心沙盒检查逻辑，被 MethodBind 和动态调用共用。
 static bool _gdscript_sandbox_check_core(GDScriptLanguage::SandboxProfile *profile,
+		const String &profile_id,
 		const StringName &p_class_name,
 		const StringName &p_method_name,
 		const Variant **p_args,
@@ -56,7 +57,7 @@ static bool _gdscript_sandbox_check_core(GDScriptLanguage::SandboxProfile *profi
 	if (p_class_name != StringName()) {
 		if (profile->config.is_class_or_parent_blocked(p_class_name) ||
 				profile->config.is_method_blocked_with_inheritance(p_class_name, p_method_name)) {
-			String msg = vformat("Sandbox blocked call to '%s.%s()'.", String(p_class_name), String(p_method_name));
+			String msg = vformat("Sandbox [%s] blocked call to '%s.%s()'.", profile_id, String(p_class_name), String(p_method_name));
 			profile->errors.add_error("security", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
 			r_err_text = msg;
 			return true;
@@ -79,7 +80,7 @@ static bool _gdscript_sandbox_check_core(GDScriptLanguage::SandboxProfile *profi
 	if (p_class_name != StringName() || category == hmsandbox::HMSandboxApiCategory::HEAVY) {
 		if (!profile->limiter.check_api_rate_limit(category)) {
 			const char *limit_type = (category == hmsandbox::HMSandboxApiCategory::HEAVY) ? "heavy operation" : "write";
-			String msg = vformat("Sandbox %s limit exceeded when calling '%s.%s()'.", limit_type, String(p_class_name), String(p_method_name));
+			String msg = vformat("Sandbox [%s] %s limit exceeded when calling '%s.%s()'.", profile_id, limit_type, String(p_class_name), String(p_method_name));
 			profile->errors.add_error("limit", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
 			r_err_text = msg;
 			return true;
@@ -92,7 +93,7 @@ static bool _gdscript_sandbox_check_core(GDScriptLanguage::SandboxProfile *profi
 		if (p_argcount > 0 && p_args[0] && p_args[0]->get_type() == Variant::STRING) {
 			String path = *p_args[0];
 			if (!profile->config.is_path_allowed(path)) {
-				String msg = vformat("Sandbox blocked unsafe path '%s' in %s.%s().", path, String(p_class_name), String(p_method_name));
+				String msg = vformat("Sandbox [%s] blocked unsafe path '%s' in %s.%s().", profile_id, path, String(p_class_name), String(p_method_name));
 				profile->errors.add_error("security", msg, p_script_path, p_line, 0, String(), "error", "gdscript_vm", "runtime");
 				r_err_text = msg;
 				return true;
@@ -139,7 +140,7 @@ static bool _gdscript_sandbox_check_method_bind(GDScriptInstance *p_instance,
 	}
 	const StringName &method_name = p_method->get_name();
 
-	return _gdscript_sandbox_check_core(profile, class_name, method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
+	return _gdscript_sandbox_check_core(profile, profile_id, class_name, method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
 }
 
 
@@ -183,7 +184,7 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 	}
 
 	// 复用核心检查逻辑
-	return _gdscript_sandbox_check_core(profile, class_name, p_method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
+	return _gdscript_sandbox_check_core(profile, profile_id, class_name, p_method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
 }
 
 static bool _profile_count_as_native(const Object *p_base_obj, const StringName &p_methodname) {
