@@ -44,6 +44,9 @@
 #include "core/templates/hash_map.h"
 #include "scene/main/node.h"
 
+#include "modules/holymolly/hmsandbox/sandbox_manager.h"
+#include "modules/holymolly/hmsandbox/sandbox_runtime.h"
+
 #if defined(TOOLS_ENABLED) && !defined(DISABLE_DEPRECATED)
 #define SUGGEST_GODOT4_RENAMES
 #include "editor/project_upgrade/renames_map_3_to_4.h"
@@ -227,6 +230,21 @@ static GDScriptParser::DataType make_builtin_meta_type(Variant::Type p_type) {
 	type.is_constant = true;
 	type.is_meta_type = true;
 	return type;
+}
+
+static hmsandbox::HMSandbox *get_sandbox_for_script(const String &p_script_path) {
+	if (p_script_path.is_empty()) {
+		return nullptr;
+	}
+
+	// Get the global sandbox manager
+	hmsandbox::HMSandboxManager *manager = hmsandbox::get_global_sandbox_manager();
+	if (!manager) {
+		return nullptr;
+	}
+
+	// Find the sandbox that owns this script path
+	return manager->find_sandbox_by_script_path(p_script_path);
 }
 
 bool GDScriptAnalyzer::has_member_name_conflict_in_script_class(const StringName &p_member_name, const GDScriptParser::ClassNode *p_class, const GDScriptParser::Node *p_member) {
@@ -464,6 +482,47 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 			const StringName &name = id->name;
 			base.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
 
+/**** Sandbox Local Resolve */
+
+			// Check sandbox local classes first (before global classes)
+			hmsandbox::HMSandbox *sandbox = get_sandbox_for_script(parser->script_path);
+			bool found_in_sandbox = false;
+			if (sandbox && sandbox->has_script_path(parser->script_path)) {
+				// This script belongs to a sandbox, check local classes first
+				if (sandbox->has_local_class(name)) {
+					String base_path = sandbox->get_script_path_for_class(name);
+					if (!base_path.is_empty()) {
+
+						if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+							base = parser->head->get_datatype();
+						} else {
+							Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+							if (base_parser.is_null()) {
+								push_error(vformat(R"(Could not resolve super class "%s" from sandbox local classes.)", name), id);
+								return ERR_PARSE_ERROR;
+							}
+
+							Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+							if (err != OK) {
+								push_error(vformat(R"(Could not resolve super class inheritance from sandbox local class "%s".)", name), id);
+								return err;
+							}
+
+#ifdef DEBUG_ENABLED
+							if (!parser->_is_tool && base_parser->get_parser()->_is_tool) {
+								parser->push_warning(p_class, GDScriptWarning::MISSING_TOOL);
+							}
+#endif // DEBUG_ENABLED
+
+							base = base_parser->get_parser()->head->get_datatype();
+						}
+						found_in_sandbox = true;
+					}
+				}
+			}
+
+/**** Sandbox Local Resolve End */
+			if (!found_in_sandbox) {
 			if (ScriptServer::is_global_class(name)) {
 				String base_path = ScriptServer::get_global_class_path(name);
 
@@ -570,6 +629,7 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 					push_error(vformat(R"(Could not find base class "%s".)", name), id);
 					return ERR_PARSE_ERROR;
 				}
+			}
 			}
 		}
 
@@ -4560,6 +4620,28 @@ void GDScriptAnalyzer::reduce_identifier(GDScriptParser::IdentifierNode *p_ident
 		return;
 	}
 
+/***** Sandbox Local Resolve */
+
+	// Check sandbox local classes first (before global classes)
+	hmsandbox::HMSandbox *sandbox = get_sandbox_for_script(parser->script_path);
+	if (sandbox && sandbox->has_script_path(parser->script_path)) {
+		// This script belongs to a sandbox, check local classes first
+		if (sandbox->has_local_class(name)) {
+			String path = sandbox->get_script_path_for_class(name);
+			if (!path.is_empty()) {
+				Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+				if (ref.is_valid()) {
+					Error err = ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+					if (err == OK) {
+						p_identifier->set_datatype(ref->get_parser()->head->get_datatype());
+						return;
+					}
+				}
+			}
+		}
+	}
+
+/***** Sandbox Local Resolve */
 	if (ScriptServer::is_global_class(name)) {
 		p_identifier->set_datatype(make_global_class_meta_type(name, p_identifier));
 		return;
