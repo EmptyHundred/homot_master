@@ -144,6 +144,12 @@
 
 #ifdef MODULE_GDSCRIPT_ENABLED
 #include "modules/gdscript/gdscript.h"
+#include "modules/gdscript/gdscript_analyzer.h"
+#include "modules/gdscript/gdscript_cache.h"
+#include "modules/gdscript/gdscript_parser.h"
+#include "modules/gdscript/gdscript_warning.h"
+#include "modules/holymolly/hmsandbox/sandbox_manager.h"
+#include "modules/holymolly/hmsandbox/sandbox_runtime.h"
 #if defined(TOOLS_ENABLED) && !defined(GDSCRIPT_NO_LSP)
 #include "modules/gdscript/language_server/gdscript_language_server.h"
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
@@ -683,6 +689,10 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("-s, --script <script>", "Run a script.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--main-loop <main_loop_name>", "Run a MainLoop specified by its global class name.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--check-only", "Only parse for errors and quit (use with --script).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+#ifdef MODULE_GDSCRIPT_ENABLED
+	print_help_option("--lint-sandbox <dir>", "Lint all GDScript (.hm/.hmc/.gd) files in <dir> as a sandbox sub-project. Use with --path to set the main project.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--lint-json", "Output lint results as JSON (use with --lint-sandbox).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+#endif // MODULE_GDSCRIPT_ENABLED
 #endif // defined(OVERRIDE_PATH_ENABLED)
 #ifdef TOOLS_ENABLED
 	print_help_option("--import", "Starts the editor, waits for any resources to be imported, and then quits.\n", CLI_OPTION_AVAILABILITY_EDITOR);
@@ -3891,6 +3901,11 @@ int Main::start() {
 	String main_loop_type;
 	bool check_only = false;
 
+#ifdef MODULE_GDSCRIPT_ENABLED
+	String lint_sandbox_dir;
+	bool lint_json = false;
+#endif // MODULE_GDSCRIPT_ENABLED
+
 #ifdef TOOLS_ENABLED
 	String doc_tool_path;
 	bool doc_tool_implicit_cwd = false;
@@ -3920,6 +3935,10 @@ int Main::start() {
 		// Designed to override and pass arguments to the unit test handler.
 		if (E->get() == "--check-only") {
 			check_only = true;
+#ifdef MODULE_GDSCRIPT_ENABLED
+		} else if (E->get() == "--lint-json") {
+			lint_json = true;
+#endif // MODULE_GDSCRIPT_ENABLED
 #ifdef TOOLS_ENABLED
 		} else if (E->get() == "--no-docbase") {
 			gen_flags.set_flag(DocTools::GENERATE_FLAG_SKIP_BASIC_TYPES);
@@ -3985,6 +4004,10 @@ int Main::start() {
 			bool parsed_pair = true;
 			if (E->get() == "-s" || E->get() == "--script") {
 				script = E->next()->get();
+#ifdef MODULE_GDSCRIPT_ENABLED
+			} else if (E->get() == "--lint-sandbox") {
+				lint_sandbox_dir = E->next()->get();
+#endif // MODULE_GDSCRIPT_ENABLED
 			} else if (E->get() == "--main-loop") {
 				main_loop_type = E->next()->get();
 #ifdef TOOLS_ENABLED
@@ -4041,6 +4064,147 @@ int Main::start() {
 		}
 #endif
 	}
+
+	// ---- GDScript Sandbox Linter ----
+#ifdef MODULE_GDSCRIPT_ENABLED
+	if (!lint_sandbox_dir.is_empty()) {
+		// Validate that the directory exists.
+		Ref<DirAccess> lint_da = DirAccess::open(lint_sandbox_dir);
+		ERR_FAIL_COND_V_MSG(lint_da.is_null(), EXIT_FAILURE,
+				"--lint-sandbox: Invalid directory path: " + lint_sandbox_dir);
+		// Normalize to absolute path.
+		lint_sandbox_dir = lint_da->get_current_dir();
+
+		// Create a temporary sandbox for analysis.
+		hmsandbox::HMSandboxManager *sandbox_mgr = hmsandbox::get_global_sandbox_manager();
+		ERR_FAIL_NULL_V_MSG(sandbox_mgr, EXIT_FAILURE, "--lint-sandbox: HMSandboxManager not available.");
+
+		hmsandbox::HMSandbox *lint_sandbox = memnew(hmsandbox::HMSandbox);
+		String lint_profile_id = hmsandbox::HMSandbox::generate_sandbox_id();
+		lint_sandbox->set_profile_id(lint_profile_id);
+		lint_sandbox->set_name(lint_profile_id);
+		lint_sandbox->set_load_directory(lint_sandbox_dir);
+
+		// Register sandbox so the analyzer can find it via get_sandbox_for_script().
+		sandbox_mgr->register_sandbox(lint_sandbox);
+
+		// Pre-scan and register class names (lightweight, no full compilation).
+		lint_sandbox->register_classes();
+
+		// Collect all script files from the sandbox directory.
+		PackedStringArray script_paths = hmsandbox::HMSandbox::collect_dependencies(lint_sandbox_dir);
+
+		int total_errors = 0;
+		int total_warnings = 0;
+		int total_files = script_paths.size();
+
+		String json_output;
+		if (lint_json) {
+			json_output = "[\n";
+		}
+
+		for (int i = 0; i < script_paths.size(); i++) {
+			const String &script_path = script_paths[i];
+
+			// Read the source code.
+			String source = FileAccess::get_file_as_string(script_path);
+			if (source.is_empty() && !FileAccess::exists(script_path)) {
+				OS::get_singleton()->printerr("Warning: Could not read file: %s\n", script_path.utf8().get_data());
+				continue;
+			}
+
+			// Use GDScriptLanguage::validate() for full analysis with error/warning output.
+			List<ScriptLanguage::ScriptError> errors;
+			List<ScriptLanguage::Warning> warnings;
+
+			GDScriptLanguage::get_singleton()->validate(source, script_path, nullptr, &errors, &warnings, nullptr);
+
+			// Make path relative to lint dir for cleaner output.
+			String display_path = script_path;
+			if (display_path.begins_with(lint_sandbox_dir)) {
+				display_path = display_path.substr(lint_sandbox_dir.length());
+				if (display_path.begins_with("/") || display_path.begins_with("\\")) {
+					display_path = display_path.substr(1);
+				}
+			}
+
+			if (lint_json) {
+				// JSON output for each file with issues.
+				if (!errors.is_empty() || !warnings.is_empty()) {
+					if (total_errors > 0 || total_warnings > 0) {
+						json_output += ",\n";
+					}
+					json_output += "  {\n";
+					json_output += "    \"file\": \"" + display_path.json_escape() + "\",\n";
+
+					json_output += "    \"errors\": [";
+					bool first = true;
+					for (const ScriptLanguage::ScriptError &e : errors) {
+						if (!first) {
+							json_output += ",";
+						}
+						json_output += "\n      {\"line\": " + itos(e.line) + ", \"column\": " + itos(e.column) + ", \"message\": \"" + e.message.json_escape() + "\"}";
+						first = false;
+					}
+					json_output += "\n    ],\n";
+
+					json_output += "    \"warnings\": [";
+					first = true;
+					for (const ScriptLanguage::Warning &w : warnings) {
+						if (!first) {
+							json_output += ",";
+						}
+						json_output += "\n      {\"line\": " + itos(w.start_line) + ", \"code\": \"" + w.string_code.json_escape() + "\", \"message\": \"" + w.message.json_escape() + "\"}";
+						first = false;
+					}
+					json_output += "\n    ]\n";
+					json_output += "  }";
+				}
+			} else {
+				// Text output.
+				for (const ScriptLanguage::ScriptError &e : errors) {
+					OS::get_singleton()->print("ERROR: %s:%d:%d: %s\n",
+							display_path.utf8().get_data(),
+							e.line, e.column,
+							e.message.utf8().get_data());
+				}
+				for (const ScriptLanguage::Warning &w : warnings) {
+					OS::get_singleton()->print("WARNING: %s:%d: [%s] %s\n",
+							display_path.utf8().get_data(),
+							w.start_line,
+							w.string_code.utf8().get_data(),
+							w.message.utf8().get_data());
+				}
+			}
+
+			total_errors += errors.size();
+			total_warnings += warnings.size();
+		}
+
+		if (lint_json) {
+			json_output += "\n]\n";
+			OS::get_singleton()->print("%s", json_output.utf8().get_data());
+		} else {
+			OS::get_singleton()->print("\n--- Lint Summary ---\n");
+			OS::get_singleton()->print("Directory: %s\n", lint_sandbox_dir.utf8().get_data());
+			OS::get_singleton()->print("Files scanned: %d\n", total_files);
+			OS::get_singleton()->print("Errors: %d\n", total_errors);
+			OS::get_singleton()->print("Warnings: %d\n", total_warnings);
+
+			if (total_errors == 0 && total_warnings == 0) {
+				OS::get_singleton()->print("Result: PASS\n");
+			} else {
+				OS::get_singleton()->print("Result: FAIL\n");
+			}
+		}
+
+		// Cleanup.
+		sandbox_mgr->unregister_sandbox(lint_sandbox);
+		memdelete(lint_sandbox);
+
+		return total_errors > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+	}
+#endif // MODULE_GDSCRIPT_ENABLED
 
 	uint64_t minimum_time_msec = GLOBAL_DEF(PropertyInfo(Variant::INT, "application/boot_splash/minimum_display_time", PROPERTY_HINT_RANGE, "0,100,1,or_greater,suffix:ms"), 0);
 	if (Engine::get_singleton()->is_editor_hint()) {

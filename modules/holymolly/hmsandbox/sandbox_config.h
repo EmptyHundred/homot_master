@@ -53,8 +53,10 @@ private:
 	HashSet<String> blocked_methods; // "Class.method"
 	HashSet<String> blocked_properties; // "Class.property"
 	HashSet<String> allowed_path_prefixes;
+	bool default_blocklist_initialized = false;
 
 	void setup_default_blocklist();
+	void ensure_default_blocklist();
 };
 
 } // namespace hmsandbox

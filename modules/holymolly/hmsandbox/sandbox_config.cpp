@@ -12,7 +12,18 @@
 namespace hmsandbox {
 
 HMSandboxConfig::HMSandboxConfig() {
-	setup_default_blocklist();
+	// NOTE: Do NOT call setup_default_blocklist() here.
+	// Static dummy instances (HMSandbox::dummy_config) are constructed during
+	// C++ static initialization, before StringName::setup() is called.
+	// block_class() creates StringName objects which would crash.
+	// Default blocklist is set up lazily on first access instead.
+}
+
+void HMSandboxConfig::ensure_default_blocklist() {
+	if (!default_blocklist_initialized) {
+		default_blocklist_initialized = true;
+		setup_default_blocklist();
+	}
 }
 
 Error HMSandboxConfig::load(const String &p_path) {
@@ -91,6 +102,7 @@ void HMSandboxConfig::block_class(const StringName &p_class_name) {
 }
 
 bool HMSandboxConfig::is_class_or_parent_blocked(const StringName &p_class_name) const {
+	const_cast<HMSandboxConfig *>(this)->ensure_default_blocklist();
 	StringName current = p_class_name;
 	while (!current.is_empty()) {
 		if (blocked_classes.has(current)) {
@@ -106,6 +118,7 @@ void HMSandboxConfig::block_method(const StringName &p_class_name, const StringN
 }
 
 bool HMSandboxConfig::is_method_blocked_with_inheritance(const StringName &p_class_name, const StringName &p_method_name) const {
+	const_cast<HMSandboxConfig *>(this)->ensure_default_blocklist();
 	StringName current = p_class_name;
 	while (!current.is_empty()) {
 		const String key = String(current) + "." + String(p_method_name);
@@ -122,6 +135,7 @@ void HMSandboxConfig::block_property(const StringName &p_class_name, const Strin
 }
 
 bool HMSandboxConfig::is_property_blocked_with_inheritance(const StringName &p_class_name, const StringName &p_property_name) const {
+	const_cast<HMSandboxConfig *>(this)->ensure_default_blocklist();
 	StringName current = p_class_name;
 	while (!current.is_empty()) {
 		const String key = String(current) + "." + String(p_property_name);
@@ -163,7 +177,8 @@ void HMSandboxConfig::reset() {
 	blocked_methods.clear();
 	blocked_properties.clear();
 	allowed_path_prefixes.clear();
-	setup_default_blocklist();
+	default_blocklist_initialized = false;
+	ensure_default_blocklist();
 }
 
 void HMSandboxConfig::setup_default_blocklist() {
