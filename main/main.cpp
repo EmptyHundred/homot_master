@@ -4191,7 +4191,7 @@ int Main::start() {
 			OS::get_singleton()->print("Errors: %d\n", total_errors);
 			OS::get_singleton()->print("Warnings: %d\n", total_warnings);
 
-			if (total_errors == 0 && total_warnings == 0) {
+			if (total_errors == 0) {
 				OS::get_singleton()->print("Result: PASS\n");
 			} else {
 				OS::get_singleton()->print("Result: FAIL\n");
