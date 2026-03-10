@@ -149,6 +149,10 @@
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
 #endif // MODULE_GDSCRIPT_ENABLED
 
+#ifdef HOMOT
+#include "main/linterdb_dump.h"
+#endif // HOMOT
+
 /* Static members */
 
 // Singletons
@@ -286,6 +290,9 @@ static bool include_docs_in_extension_api_dump = false;
 static bool validate_extension_api = false;
 static String validate_extension_api_file;
 #endif
+#ifdef HOMOT
+static bool dump_linterdb = false;
+#endif // HOMOT
 bool profile_gpu = false;
 
 // Constants.
@@ -717,6 +724,9 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("--benchmark", "Benchmark the run time and print it to console.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("--benchmark-file <path>", "Benchmark the run time and save it to a given file in JSON format. The path should be absolute.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 #endif // TOOLS_ENABLED
+#ifdef HOMOT
+	print_help_option("--dump-linterdb", "Generate a JSON dump of the ClassDB, Variant types, utility functions, and global enums for the standalone GDScript linter named \"linterdb.json\" in the current folder.\n");
+#endif // HOMOT
 #ifdef TESTS_ENABLED
 	print_help_option("--test [--help]", "Run unit tests. Use --test --help for more information.\n");
 #endif // TESTS_ENABLED
@@ -1619,6 +1629,14 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				OS::get_singleton()->print("Missing file to load argument after --validate-extension-api, aborting.");
 				goto error;
 			}
+#ifdef HOMOT
+		} else if (arg == "--dump-linterdb") {
+			editor = true;
+			cmdline_tool = true;
+			dump_linterdb = true;
+			print_line("Dumping Linter DB");
+			main_args.push_back(arg);
+#endif // HOMOT
 		} else if (arg == "--import") {
 			editor = true;
 			cmdline_tool = true;
@@ -4166,6 +4184,18 @@ int Main::start() {
 		if (dump_gdextension_interface || dump_gdextension_interface_header || dump_extension_api) {
 			return EXIT_SUCCESS;
 		}
+
+#ifdef HOMOT
+		if (dump_linterdb) {
+			Error err = LinterDBDump::generate_linterdb_json_file("linterdb.json");
+			if (err == OK) {
+				print_line("Linter DB saved to: linterdb.json");
+			} else {
+				print_line("Failed to save Linter DB.");
+			}
+			return err == OK ? EXIT_SUCCESS : EXIT_FAILURE;
+		}
+#endif // HOMOT
 
 		if (validate_extension_api) {
 			Engine::get_singleton()->set_editor_hint(true); // "extension_api.json" should always contains editor singletons.
