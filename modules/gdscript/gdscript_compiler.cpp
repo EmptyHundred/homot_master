@@ -39,8 +39,10 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 
+#ifdef HOMOT
 #include "modules/holymolly/hmsandbox/sandbox_manager.h"
 #include "modules/holymolly/hmsandbox/sandbox_runtime.h"
+#endif // HOMOT
 
 #include "scene/scene_string_names.h"
 
@@ -435,6 +437,7 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 						}
 					}
 
+#ifdef HOMOT
 					// Try sandbox local classes.
 					hmsandbox::HMSandboxManager *manager = hmsandbox::get_global_sandbox_manager();
 					if (manager) {
@@ -450,6 +453,7 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 							}
 						}
 					}
+#endif // HOMOT
 
 					// Try global classes.
 					if (ScriptServer::is_global_class(identifier)) {

@@ -40,7 +40,9 @@
 #include "core/object/script_language.h"
 #include "core/templates/rb_set.h"
 
+#ifdef HOMOT
 #include "modules/holymolly/hmsandbox/sandbox_profile.h"
+#endif // HOMOT
 
 class GDScriptNativeClass : public RefCounted {
 	GDCLASS(GDScriptNativeClass, RefCounted);
@@ -350,6 +352,7 @@ public:
 	GDScript();
 	~GDScript();
 
+#ifdef HOMOT
 private:
 	bool sandbox_enabled = false;
 	String sandbox_profile_id;
@@ -359,9 +362,10 @@ public:
 		sandbox_enabled = p_enabled;
 		sandbox_profile_id = p_profile_id;
 	}
-	
+
 	bool is_sandbox_enabled() const { return sandbox_enabled; }
 	String get_sandbox_profile_id() const { return sandbox_profile_id; }
+#endif // HOMOT
 };
 
 class GDScriptInstance : public ScriptInstance {
@@ -422,8 +426,10 @@ public:
 	GDScriptInstance() {}
 	~GDScriptInstance();
 
+#ifdef HOMOT
 	bool is_sandbox_enabled() const { return script->is_sandbox_enabled(); }
 	String get_sandbox_profile_id() const { return script->get_sandbox_profile_id(); }
+#endif // HOMOT
 };
 
 class GDScriptLanguage : public ScriptLanguage {
@@ -682,6 +688,7 @@ public:
 	GDScriptLanguage();
 	~GDScriptLanguage();
 
+#ifdef HOMOT
 // <------------------ Sandbox --------------------->
 	// 简单的 GDScript 沙盒 profile：直接复用 HMScript 的配置、限流与错误聚合实现，
 	// 由上层（如 HMScript 或未来的 GDScript 沙盒管理器）按需创建与使用。
@@ -693,7 +700,7 @@ private:
 	HashMap<String, SandboxProfile> sandbox_profiles;
 
 public:
-	
+
 	// GDScript 沙盒管理 API：允许外部模块基于 ID 获取 / 创建 profile，并查询错误。
 	SandboxProfile *get_sandbox_profile(const String &p_id);
 	SandboxProfile *ensure_sandbox_profile(const String &p_id);
@@ -704,6 +711,7 @@ public:
 	// 注册一个在每帧调用的沙盒回调（可为 nullptr 表示禁用）。
 	void set_sandbox_frame_callback(void (*p_callback)(void)) { sandbox_frame_callback = p_callback; }
 // <------------------ Sandbox --------------------->
+#endif // HOMOT
 
 };
 

@@ -28,7 +28,9 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#ifdef HOMOT
 #include "core/object/class_db.h"
+#endif // HOMOT
 
 #include "gdscript.h"
 
@@ -1075,8 +1077,10 @@ void GDScript::_get_property_list(List<PropertyInfo> *p_properties) const {
 void GDScript::_bind_methods() {
 	ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "new", &GDScript::_new, MethodInfo("new"));
 
+#ifdef HOMOT
 	ClassDB::bind_method(D_METHOD("is_sandbox_enabled"), &GDScript::is_sandbox_enabled);
 	ClassDB::bind_method(D_METHOD("get_sandbox_profile_id"), &GDScript::get_sandbox_profile_id);
+#endif // HOMOT
 }
 
 void GDScript::set_path_cache(const String &p_path) {
@@ -2900,6 +2904,7 @@ Ref<GDScript> GDScriptLanguage::get_script_by_fully_qualified_name(const String 
 	return scr;
 }
 
+#ifdef HOMOT
 /*************** SANDBOX ***************/
 GDScriptLanguage::SandboxProfile *GDScriptLanguage::ensure_sandbox_profile(const String &p_id) {
 	HashMap<String, SandboxProfile>::Iterator it = sandbox_profiles.find(p_id);
@@ -2949,6 +2954,7 @@ String GDScriptLanguage::get_sandbox_error_report(const String &p_id) const {
 }
 
 /*************** SANDBOX ***************/
+#endif // HOMOT
 
 /*************** RESOURCE ***************/
 

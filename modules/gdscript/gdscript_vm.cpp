@@ -37,6 +37,7 @@
 
 #ifdef DEBUG_ENABLED
 
+#ifdef HOMOT
 // -----------------------------------------------------------------------------
 // GDScript 沙盒辅助函数
 // -----------------------------------------------------------------------------
@@ -169,7 +170,7 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 	}
 
 	GDScriptLanguage::SandboxProfile *profile = lang->ensure_sandbox_profile(profile_id);
-	
+
 	if (!profile || !profile->enabled) {
 		return false;
 	}
@@ -186,6 +187,7 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 	// 复用核心检查逻辑
 	return _gdscript_sandbox_check_core(profile, profile_id, class_name, p_method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
 }
+#endif // HOMOT
 
 static bool _profile_count_as_native(const Object *p_base_obj, const StringName &p_methodname) {
 	if (!p_base_obj) {
@@ -2062,11 +2064,13 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				GET_INSTRUCTION_ARG(base, argc);
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// 沙盒检查：动态调用（OPCODE_CALL）需要根据方法名和基础对象进行限流。
 				// 这会捕获 Node.new() 等重操作并应用 HEAVY 配额限制。
 				if (_gdscript_sandbox_check_dynamic_call(p_instance, base, *methodname, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2204,10 +2208,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 #endif
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// 如果当前实例启用了 GDScript 沙盒，在实际调用 native 方法前做安全与限流检查。
 				if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2317,11 +2323,13 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				GET_INSTRUCTION_ARG(ret, argc);
 
 				const Variant **argptrs = const_cast<const Variant **>(instruction_args);
-				
+
+#ifdef HOMOT
 				// 静态 native 调用也需要经过沙盒检查（例如 FileAccess.open 等）。
 				if (_gdscript_sandbox_check_method_bind(p_instance, nullptr, method, argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2366,10 +2374,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// 静态 native 调用（validated 路径）同样需要沙盒检查。
 				if (_gdscript_sandbox_check_method_bind(p_instance, nullptr, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2409,10 +2419,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// 静态 native 调用（validated no-return 路径）同样需要沙盒检查。
 				if (_gdscript_sandbox_check_method_bind(p_instance, nullptr, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2469,10 +2481,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// validated 实例方法调用同样需要沙盒检查。
 				if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2526,10 +2540,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 #endif
 				Variant **argptrs = instruction_args;
 
+#ifdef HOMOT
 				// validated 实例方法调用同样需要沙盒检查。
 				if (_gdscript_sandbox_check_method_bind(p_instance, base_obj, method, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 					OPCODE_BREAK;
 				}
+#endif // HOMOT
 
 #ifdef DEBUG_ENABLED
 				uint64_t call_time = 0;
@@ -2714,10 +2730,12 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 						if (!mb) {
 							err.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
 						} else {
+#ifdef HOMOT
 							// 沙盒检查：调用基类 native 方法也需要检查。
 							if (_gdscript_sandbox_check_method_bind(p_instance, p_instance->owner, mb, (const Variant **)argptrs, argc, get_script()->get_script_path(), line, err_text)) {
 								OPCODE_BREAK;
 							}
+#endif // HOMOT
 							*dst = mb->call(p_instance->owner, (const Variant **)argptrs, argc, err);
 						}
 					} else {
