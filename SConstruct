@@ -231,6 +231,7 @@ opts.Add(
     )
 )
 opts.Add(BoolVariable("tests", "Build the unit tests", False))
+opts.Add(BoolVariable("linter", "Build the standalone GDScript linter (HOMOT)", False))
 opts.Add(BoolVariable("fast_unsafe", "Enable unsafe options for faster incremental builds", False))
 opts.Add(BoolVariable("ninja", "Use the ninja backend for faster rebuilds", False))
 opts.Add(BoolVariable("ninja_auto_run", "Run ninja automatically after generating the ninja file", True))
@@ -1220,6 +1221,9 @@ if env["tests"]:
 SConscript("main/SCsub")
 
 SConscript("platform/" + env["platform"] + "/SCsub")  # Build selected platform.
+
+if env["linter"]:
+    SConscript("linter/SCsub")
 
 # Microsoft Visual Studio Project Generation
 if env["vsproj"]:

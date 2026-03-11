@@ -1,0 +1,36 @@
+#!/usr/bin/env python
+"""
+SCsub for the standalone GDScript linter.
+Produces a separate homot-linter binary that uses stubs instead of
+the full engine for ClassDB/Engine/ProjectSettings/ResourceLoader/ScriptServer.
+
+To enable, add to root SConstruct after the platform SCsub line:
+    if env.get("linter", False):
+        SConscript("linter/SCsub")
+
+Build with:
+    scons platform=windows target=editor dev_build=yes linter=yes
+"""
+from misc.utility.scons_hints import *
+
+Import("env")
+
+env_linter = env.Clone()
+
+# The linter stubs redefine symbols already present in core.lib.
+# On MSVC: stub .obj listed before core.lib wins (first-definition-wins).
+# On MinGW/GCC: allow multiple definitions so stubs take precedence.
+if not env_linter.msvc:
+    env_linter.Append(LINKFLAGS=["-Wl,--allow-multiple-definition"])
+
+linter_sources = []
+
+# Compile linter-specific source files.
+env_linter.add_source_files(linter_sources, "main_linter.cpp")
+env_linter.add_source_files(linter_sources, "stubs/*.cpp")
+
+# Build as a separate program.
+# The linter_sources (stub .obj files) are listed first so their symbols
+# take precedence over the same symbols in the engine static libraries
+# that are already in env["LIBS"].
+prog = env_linter.add_program("#bin/homot-linter", linter_sources)
