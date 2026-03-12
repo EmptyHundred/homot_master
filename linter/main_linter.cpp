@@ -2,327 +2,253 @@
 /*  main_linter.cpp                                                       */
 /**************************************************************************/
 /*  Standalone GDScript linter entry point.                               */
-/*  Loads linterdb.json for native type info, scans a directory of        */
-/*  scripts, and runs the GDScript analyzer on each file.                 */
+/*  Performs minimal engine bootstrap, then delegates to linter_run.       */
 /**************************************************************************/
 
 #ifdef HOMOT
 
-#include "stubs/classdb_stub.h"
-#include "stubs/linterdb.h"
-#include "stubs/script_server_stub.h"
+#include "linter_run.h"
 
-#include "modules/gdscript/gdscript_analyzer.h"
+#include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_cache.h"
-#include "modules/gdscript/gdscript_parser.h"
-#include "modules/gdscript/gdscript_warning.h"
+#include "modules/gdscript/gdscript_utility_functions.h"
+#include "modules/holymolly/register_types.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
+#include "core/object/script_language.h"
 #include "core/os/os.h"
-#include "core/os/thread.h"
 #include "core/register_core_types.h"
-#include "core/string/print_string.h"
 #include "core/string/translation_server.h"
-#include "modules/register_module_types.h"
-#include "scene/register_scene_types.h"
-#include "servers/register_server_types.h"
 #include "servers/text/text_server.h"
 #include "servers/text/text_server_dummy.h"
 
-namespace linter {
-
-struct LintResult {
-	String path;
-	List<GDScriptParser::ParserError> errors;
-#ifdef DEBUG_ENABLED
-	List<GDScriptWarning> warnings;
+#ifdef _WIN32
+#include "drivers/windows/dir_access_windows.h"
+#include "drivers/windows/file_access_windows.h"
 #endif
+
+#include <cstdio>
+#include <cstring>
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+// Suppress stderr during C++ static initialization.
+// Engine code creates StringName objects in global constructors before
+// StringName::setup() runs, producing harmless "not configured" errors.
+// This redirects fd 2 to NUL before those constructors execute.
+static int _linter_saved_stderr_fd = -1;
+
+#ifdef _WIN32
+#pragma init_seg(compiler)
+static struct _LinterStderrGuard {
+	_LinterStderrGuard() {
+		fflush(stderr);
+		_linter_saved_stderr_fd = _dup(_fileno(stderr));
+		FILE *nul = fopen("NUL", "w");
+		if (nul) {
+			_dup2(_fileno(nul), _fileno(stderr));
+			fclose(nul);
+		}
+	}
+} _linter_stderr_guard;
+#else
+__attribute__((constructor(101)))
+static void _linter_suppress_stderr() {
+	fflush(stderr);
+	_linter_saved_stderr_fd = dup(fileno(stderr));
+	FILE *nul = fopen("/dev/null", "w");
+	if (nul) {
+		dup2(fileno(nul), fileno(stderr));
+		fclose(nul);
+	}
+}
+#endif
+
+// Restore stderr — called from main() after bootstrap.
+static void _linter_restore_stderr() {
+	if (_linter_saved_stderr_fd >= 0) {
+		fflush(stderr);
+#ifdef _WIN32
+		_dup2(_linter_saved_stderr_fd, _fileno(stderr));
+		_close(_linter_saved_stderr_fd);
+#else
+		dup2(_linter_saved_stderr_fd, fileno(stderr));
+		close(_linter_saved_stderr_fd);
+#endif
+		_linter_saved_stderr_fd = -1;
+	}
+}
+
+// Minimal OS implementation for the standalone linter.
+// Only provides the singleton; no display, audio, or platform features.
+class OS_Linter : public OS {
+protected:
+	void initialize() override {}
+	void initialize_joypads() override {}
+	void set_main_loop(MainLoop *p_main_loop) override {}
+	void delete_main_loop() override {}
+	void finalize() override {}
+	void finalize_core() override {}
+	bool _check_internal_feature_support(const String &p_feature) override { return false; }
+
+public:
+	Vector<String> get_video_adapter_driver_info() const override { return Vector<String>(); }
+	String get_stdin_string(int64_t p_buffer_size = 1024) override { return String(); }
+	PackedByteArray get_stdin_buffer(int64_t p_buffer_size = 1024) override { return PackedByteArray(); }
+	Error get_entropy(uint8_t *r_buffer, int p_bytes) override { return ERR_UNAVAILABLE; }
+	Error execute(const String &p_path, const List<String> &p_arguments, String *r_pipe = nullptr, int *r_exitcode = nullptr, bool read_stderr = false, Mutex *p_pipe_mutex = nullptr, bool p_open_console = false) override { return ERR_UNAVAILABLE; }
+	Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) override { return ERR_UNAVAILABLE; }
+	Error kill(const ProcessID &p_pid) override { return ERR_UNAVAILABLE; }
+	bool is_process_running(const ProcessID &p_pid) const override { return false; }
+	int get_process_exit_code(const ProcessID &p_pid) const override { return -1; }
+	bool has_environment(const String &p_var) const override { return false; }
+	String get_environment(const String &p_var) const override { return String(); }
+	void set_environment(const String &p_var, const String &p_value) const override {}
+	void unset_environment(const String &p_var) const override {}
+	String get_name() const override { return "Linter"; }
+	String get_distribution_name() const override { return ""; }
+	String get_version() const override { return ""; }
+	MainLoop *get_main_loop() const override { return nullptr; }
+	DateTime get_datetime(bool utc = false) const override { return DateTime(); }
+	TimeZoneInfo get_time_zone_info() const override { return TimeZoneInfo(); }
+	void delay_usec(uint32_t p_usec) const override {}
+	uint64_t get_ticks_usec() const override { return 0; }
 };
 
-// Recursively collect script files from a directory.
-static void collect_scripts(const String &p_dir, Vector<String> &r_scripts) {
-	Ref<DirAccess> da = DirAccess::open(p_dir);
-	if (da.is_null()) {
-		return;
-	}
-
-	da->list_dir_begin();
-	String file = da->get_next();
-	while (!file.is_empty()) {
-		if (da->current_is_dir()) {
-			if (file != "." && file != "..") {
-				collect_scripts(p_dir.path_join(file), r_scripts);
-			}
-		} else {
-			String ext = file.get_extension().to_lower();
-			if (ext == "gd" || ext == "hm" || ext == "hmc") {
-				r_scripts.push_back(p_dir.path_join(file));
-			}
-		}
-		file = da->get_next();
-	}
-	da->list_dir_end();
-}
-
-// Lightweight class_name extraction from source without full parsing.
-// Looks for `class_name <Identifier>` at the top of the file.
-static String extract_class_name(const String &p_source) {
-	// Search within first 50 lines for class_name declaration.
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-
-		if (line_str.begins_with("class_name")) {
-			String rest = line_str.substr(10).strip_edges();
-			// Extract the identifier (stops at space, #, or end).
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return String();
-}
-
-// Extract `extends <Type>` to determine native base for global class registration.
-static String extract_extends(const String &p_source) {
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-
-		if (line_str.begins_with("extends")) {
-			String rest = line_str.substr(7).strip_edges();
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return "RefCounted"; // Default base class.
-}
-
-// Resolve a script class's native base by walking the extends chain.
-static StringName resolve_native_base(const String &p_extends, const HashMap<String, String> &p_class_to_extends) {
-	String current = p_extends;
-	HashSet<String> visited;
-	while (!current.is_empty() && !visited.has(current)) {
-		visited.insert(current);
-		// Check real ClassDB first (available when linked with engine).
-		if (ClassDB::class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		// Check LinterDB fallback (standalone mode).
-		LinterDB *db = LinterDB::get_singleton();
-		if (db && db->class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		auto it = p_class_to_extends.find(current);
-		if (it) {
-			current = it->value;
-		} else {
-			break;
-		}
-	}
-	return StringName("RefCounted");
-}
-
-static int run_linter(const String &p_db_path, const String &p_dir) {
-	// 1. Optionally load linter database (for future standalone mode).
-	//    When linked with the full engine, ClassDB is already populated
-	//    by register_*_types(), so --db is optional.
-	LinterDB *linter_db = nullptr;
-	if (!p_db_path.is_empty()) {
-		linter_db = memnew(LinterDB);
-		Error err = linter_db->load_from_json(p_db_path);
-		if (err != OK) {
-			print_line(vformat("WARNING: Failed to load linter database: %s (using engine ClassDB)", p_db_path));
-			memdelete(linter_db);
-			linter_db = nullptr;
-		} else {
-			print_line(vformat("Loaded linter database: %s", p_db_path));
-		}
-	}
-
-	// 2. Collect script files.
-	Vector<String> script_paths;
-	collect_scripts(p_dir, script_paths);
-
-	if (script_paths.is_empty()) {
-		print_line(vformat("No script files found in: %s", p_dir));
-		cleanup_classdb_stubs();
-		return 0;
-	}
-	print_line(vformat("Found %d script(s) in: %s", script_paths.size(), p_dir));
-
-	// 3. Pre-scan: extract class_name declarations and register global classes.
-	HashMap<String, String> class_to_path;
-	HashMap<String, String> class_to_extends;
-	for (const String &path : script_paths) {
-		String source = FileAccess::get_file_as_string(path);
-		String class_name = extract_class_name(source);
-		if (!class_name.is_empty()) {
-			class_to_path[class_name] = path;
-			class_to_extends[class_name] = extract_extends(source);
-		}
-	}
-
-	// Register global classes with resolved native bases.
-	for (const KeyValue<String, String> &kv : class_to_path) {
-		StringName native_base = resolve_native_base(
-				class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted",
-				class_to_extends);
-		ScriptServerStub::register_global_class(StringName(kv.key), kv.value, native_base);
-	}
-
-	// 4. Lint each script.
-	int total_errors = 0;
-	int total_warnings = 0;
-
-	for (const String &path : script_paths) {
-		String source = FileAccess::get_file_as_string(path);
-		if (source.is_empty()) {
-			print_line(vformat("  SKIP (empty): %s", path));
-			continue;
-		}
-
-		GDScriptParser parser;
-		GDScriptAnalyzer analyzer(&parser);
-
-		Error parse_err = parser.parse(source, path, false);
-		if (parse_err == OK) {
-			parse_err = analyzer.analyze();
-		}
-
-		// Collect errors.
-		const List<GDScriptParser::ParserError> &errors = parser.get_errors();
-		int file_errors = errors.size();
-		int file_warnings = 0;
-
-		if (file_errors > 0) {
-			for (const GDScriptParser::ParserError &e : errors) {
-				print_line(vformat("  ERROR: %s:%d:%d: %s", path, e.line, e.column, e.message));
-			}
-		}
-
-#ifdef DEBUG_ENABLED
-		// Collect warnings.
-		const List<GDScriptWarning> &warnings = parser.get_warnings();
-		file_warnings = warnings.size();
-		if (file_warnings > 0) {
-			for (const GDScriptWarning &w : warnings) {
-				print_line(vformat("  WARN:  %s:%d: [%s] %s", path, w.start_line,
-						GDScriptWarning::get_name_from_code(w.code), w.get_message()));
-			}
-		}
+// Register platform-specific file/dir access implementations.
+// The full engine does this in the platform OS class; the linter does
+// it directly to avoid linking the entire platform library.
+static void register_platform_file_access() {
+#ifdef _WIN32
+	FileAccess::make_default<FileAccessWindows>(FileAccess::ACCESS_RESOURCES);
+	FileAccess::make_default<FileAccessWindows>(FileAccess::ACCESS_USERDATA);
+	FileAccess::make_default<FileAccessWindows>(FileAccess::ACCESS_FILESYSTEM);
+	DirAccess::make_default<DirAccessWindows>(DirAccess::ACCESS_RESOURCES);
+	DirAccess::make_default<DirAccessWindows>(DirAccess::ACCESS_USERDATA);
+	DirAccess::make_default<DirAccessWindows>(DirAccess::ACCESS_FILESYSTEM);
 #endif
-
-		if (file_errors == 0 && file_warnings == 0) {
-			print_line(vformat("  OK: %s", path));
-		}
-
-		total_errors += file_errors;
-		total_warnings += file_warnings;
-	}
-
-	// 5. Summary.
-	print_line("");
-	print_line(vformat("=== Lint Summary ==="));
-	print_line(vformat("Scripts: %d", script_paths.size()));
-	print_line(vformat("Errors:  %d", total_errors));
-	print_line(vformat("Warnings: %d", total_warnings));
-
-	// Cleanup.
-	if (linter_db) {
-		cleanup_classdb_stubs();
-		memdelete(linter_db);
-	}
-
-	return total_errors > 0 ? 1 : 0;
 }
 
-} // namespace linter
+// State for manual GDScript module initialization.
+static GDScriptLanguage *gd_language = nullptr;
+static Ref<ResourceFormatLoaderGDScript> gd_loader;
+static Ref<ResourceFormatSaverGDScript> gd_saver;
+
+// Minimal GDScript module init — equivalent to initialize_gdscript_module()
+// at MODULE_INITIALIZATION_LEVEL_SERVERS, but skips editor-only parts to
+// avoid linking the editor library.
+static void init_gdscript_module() {
+	GDREGISTER_CLASS(GDScript);
+
+	gd_language = memnew(GDScriptLanguage);
+	ScriptServer::register_language(gd_language);
+
+	gd_loader.instantiate();
+	ResourceLoader::add_resource_format_loader(gd_loader);
+
+	gd_saver.instantiate();
+	ResourceSaver::add_resource_format_saver(gd_saver);
+
+	GDScriptUtilityFunctions::register_functions();
+}
+
+static void deinit_gdscript_module() {
+	GDScriptUtilityFunctions::unregister_functions();
+
+	ResourceLoader::remove_resource_format_loader(gd_loader);
+	gd_loader.unref();
+
+	ResourceSaver::remove_resource_format_saver(gd_saver);
+	gd_saver.unref();
+
+	ScriptServer::unregister_language(gd_language);
+	memdelete(gd_language);
+	gd_language = nullptr;
+}
 
 // Minimal main() for the standalone linter.
 int main(int argc, char *argv[]) {
-	// Parse arguments.
-	String db_path;
-	String dir_path;
+	// Parse arguments using raw C strings — no engine types here,
+	// because StringName/String are not yet configured.
+	const char *db_path_cstr = nullptr;
+	// Collect target paths (files and/or directories).
+	static const int MAX_TARGETS = 256;
+	const char *targets[MAX_TARGETS];
+	int target_count = 0;
 
 	for (int i = 1; i < argc; i++) {
-		String arg = String::utf8(argv[i]);
-		if (arg == "--db" && i + 1 < argc) {
-			db_path = String::utf8(argv[++i]);
-		} else if (arg == "--dir" && i + 1 < argc) {
-			dir_path = String::utf8(argv[++i]);
-		} else if (arg == "--help" || arg == "-h") {
-			print_line("Usage: homot-linter --dir <script_directory> [--db <linterdb.json>]");
-			print_line("");
-			print_line("Options:");
-			print_line("  --dir <path>   Directory containing .gd/.hm/.hmc scripts to lint");
-			print_line("  --db <path>    Path to linterdb.json (optional, generated by --dump-linterdb)");
-			print_line("  --help, -h     Show this help message");
+		if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
+			db_path_cstr = argv[++i];
+		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+			_linter_restore_stderr();
+			printf("Usage: homot-linter [options] <path> [<path> ...]\n\n");
+			printf("Lint .gd/.hm/.hmc scripts. Paths can be files or directories.\n\n");
+			printf("Options:\n");
+			printf("  --db <path>    Path to linterdb.json (generated by --dump-linterdb)\n");
+			printf("  --help, -h     Show this help message\n");
+			printf("\nExamples:\n");
+			printf("  homot-linter --db linterdb.json script.gd\n");
+			printf("  homot-linter --db linterdb.json scripts/\n");
+			printf("  homot-linter --db linterdb.json file1.gd file2.gd dir/\n");
 			return 0;
-		} else {
-			print_line(vformat("Unknown argument: %s", arg));
-			print_line("Use --help for usage information.");
+		} else if (argv[i][0] == '-') {
+			_linter_restore_stderr();
+			fprintf(stderr, "Unknown option: %s\nUse --help for usage information.\n", argv[i]);
 			return 1;
+		} else {
+			if (target_count < MAX_TARGETS) {
+				targets[target_count++] = argv[i];
+			}
 		}
 	}
 
-	if (dir_path.is_empty()) {
-		print_line("ERROR: --dir <script_directory> is required.");
-		print_line("Use --help for usage information.");
+	if (target_count == 0) {
+		_linter_restore_stderr();
+		fprintf(stderr, "ERROR: No files or directories specified.\nUse --help for usage information.\n");
 		return 1;
 	}
 
-	// Minimal engine bootstrap — enough for GDScript parsing and analysis.
-	Thread::make_main_thread();
-	set_current_thread_safe_for_nodes(true);
+	// Minimal engine bootstrap — register core types only.
+	// Scene, editor, and full module registration are skipped; ClassDB is
+	// stubbed and populated from linterdb.json instead.
 
-	OS::get_singleton()->initialize();
+	// stderr is already suppressed by the static initializer above
+	// (catches StringName errors from global constructors + bootstrap).
+	OS_Linter os_linter;
+	set_current_thread_safe_for_nodes(true);
 
 	Engine *engine = memnew(Engine);
 
+	// Core types: StringName, Variant, Object, Resource, Script, etc.
 	register_core_types();
-	register_core_driver_types();
+
+	// Platform file/dir access — needed for FileAccess::open() and DirAccess::open().
+	register_platform_file_access();
+
+	// Now that core types are registered, convert CLI args to engine Strings.
+	String db_path = db_path_cstr ? String::utf8(db_path_cstr) : String();
+	Vector<String> lint_paths;
+	for (int i = 0; i < target_count; i++) {
+		lint_paths.push_back(String::utf8(targets[i]));
+	}
 
 	ProjectSettings *globals = memnew(ProjectSettings);
-
 	register_core_settings();
 
 	TranslationServer *translation_server = memnew(TranslationServer);
 
-	// Need a text server for the tokenizer.
+	// TextServer is needed by the tokenizer for unicode checks.
 	TextServerManager *tsman = memnew(TextServerManager);
 	{
 		Ref<TextServerDummy> ts;
@@ -332,32 +258,27 @@ int main(int argc, char *argv[]) {
 	}
 
 	register_early_core_singletons();
-	initialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
 	register_core_singletons();
 
-	register_server_types();
-	initialize_modules(MODULE_INITIALIZATION_LEVEL_SERVERS);
-
-	register_scene_types();
-	initialize_modules(MODULE_INITIALIZATION_LEVEL_SCENE);
-
-	// GDScriptCache singleton is needed by the parser for cross-script deps.
+	// Initialize the GDScript module (parser, analyzer, cache, utility functions).
+	init_gdscript_module();
 	GDScriptCache *gdscript_cache = memnew(GDScriptCache);
 
+	// Initialize the holymolly module (HM/HMC script support).
+	initialize_holymolly_module(MODULE_INITIALIZATION_LEVEL_SERVERS);
+
+	// Restore stderr now that bootstrap is complete.
+	_linter_restore_stderr();
+
 	// Run the linter.
-	int result = linter::run_linter(db_path, dir_path);
+	int result = linter::run_lint(lint_paths, db_path);
 
 	// Cleanup in reverse order.
+	uninitialize_holymolly_module(MODULE_INITIALIZATION_LEVEL_SERVERS);
+
 	GDScriptCache::clear();
 	memdelete(gdscript_cache);
-
-	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_SCENE);
-	unregister_scene_types();
-
-	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_SERVERS);
-	unregister_server_types();
-
-	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
+	deinit_gdscript_module();
 
 	memdelete(tsman);
 	memdelete(translation_server);
@@ -365,8 +286,6 @@ int main(int argc, char *argv[]) {
 	memdelete(engine);
 
 	unregister_core_types();
-
-	OS::get_singleton()->finalize();
 
 	return result;
 }

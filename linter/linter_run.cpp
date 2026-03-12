@@ -2,6 +2,8 @@
 /*  linter_run.cpp                                                        */
 /**************************************************************************/
 /*  GDScript directory linter implementation.                             */
+/*  Collects scripts, pre-scans for class_name declarations, registers   */
+/*  global classes, then runs the GDScript analyzer on each file.         */
 /**************************************************************************/
 
 #ifdef HOMOT
@@ -10,6 +12,7 @@
 
 #include "stubs/classdb_stub.h"
 #include "stubs/linterdb.h"
+#include "stubs/script_server_stub.h"
 
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
@@ -48,6 +51,7 @@ static void collect_scripts(const String &p_dir, Vector<String> &r_scripts) {
 }
 
 // Lightweight class_name extraction from source without full parsing.
+// Looks for `class_name <Identifier>` at the top of the file.
 static String extract_class_name(const String &p_source) {
 	int pos = 0;
 	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
@@ -77,7 +81,7 @@ static String extract_class_name(const String &p_source) {
 	return String();
 }
 
-// Extract `extends <Type>`.
+// Extract `extends <Type>` to determine native base for global class registration.
 static String extract_extends(const String &p_source) {
 	int pos = 0;
 	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
@@ -104,16 +108,20 @@ static String extract_extends(const String &p_source) {
 			}
 		}
 	}
-	return "RefCounted";
+	return "RefCounted"; // Default base class.
 }
 
-// Resolve native base by walking extends chain.
+// Resolve a script class's native base by walking the extends chain.
 static StringName resolve_native_base(const String &p_extends, const HashMap<String, String> &p_class_to_extends) {
 	String current = p_extends;
 	HashSet<String> visited;
 	while (!current.is_empty() && !visited.has(current)) {
 		visited.insert(current);
 		if (ClassDB::class_exists(StringName(current))) {
+			return StringName(current);
+		}
+		LinterDB *db = LinterDB::get_singleton();
+		if (db && db->class_exists(StringName(current))) {
 			return StringName(current);
 		}
 		auto it = p_class_to_extends.find(current);
@@ -126,14 +134,19 @@ static StringName resolve_native_base(const String &p_extends, const HashMap<Str
 	return StringName("RefCounted");
 }
 
-int run_lint_dir(const String &p_dir, const String &p_db_path) {
-	// Optionally load linter database.
+static bool is_script_file(const String &p_path) {
+	String ext = p_path.get_extension().to_lower();
+	return ext == "gd" || ext == "hm" || ext == "hmc";
+}
+
+int run_lint(const Vector<String> &p_paths, const String &p_db_path) {
+	// 1. Optionally load linter database.
 	LinterDB *linter_db = nullptr;
 	if (!p_db_path.is_empty()) {
 		linter_db = memnew(LinterDB);
 		Error err = linter_db->load_from_json(p_db_path);
 		if (err != OK) {
-			print_line(vformat("WARNING: Failed to load linter database: %s", p_db_path));
+			print_line(vformat("WARNING: Failed to load linter database: %s (using engine ClassDB)", p_db_path));
 			memdelete(linter_db);
 			linter_db = nullptr;
 		} else {
@@ -141,20 +154,32 @@ int run_lint_dir(const String &p_dir, const String &p_db_path) {
 		}
 	}
 
-	// Collect script files.
+	// 2. Collect script files (expand directories, pass through files).
+	// Normalize backslashes to forward slashes so paths match the engine's
+	// internal format (GDScriptParser normalizes script_path to forward slashes).
 	Vector<String> script_paths;
-	collect_scripts(p_dir, script_paths);
+	for (const String &path : p_paths) {
+		String normalized = path.replace("\\", "/");
+		if (DirAccess::exists(normalized)) {
+			collect_scripts(normalized, script_paths);
+		} else if (is_script_file(normalized)) {
+			script_paths.push_back(normalized);
+		} else {
+			print_line(vformat("WARNING: Skipping non-script path: %s", normalized));
+		}
+	}
 
 	if (script_paths.is_empty()) {
-		print_line(vformat("No script files found in: %s", p_dir));
+		print_line("No script files found.");
 		if (linter_db) {
+			cleanup_classdb_stubs();
 			memdelete(linter_db);
 		}
 		return 0;
 	}
-	print_line(vformat("Found %d script(s) in: %s", script_paths.size(), p_dir));
+	print_line(vformat("Found %d script(s).", script_paths.size()));
 
-	// Pre-scan: extract class_name declarations.
+	// 3. Pre-scan: extract class_name declarations and register global classes.
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
 	for (const String &path : script_paths) {
@@ -166,7 +191,15 @@ int run_lint_dir(const String &p_dir, const String &p_db_path) {
 		}
 	}
 
-	// Lint each script.
+	// Register global classes with resolved native bases.
+	for (const KeyValue<String, String> &kv : class_to_path) {
+		StringName native_base = resolve_native_base(
+				class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted",
+				class_to_extends);
+		ScriptServerStub::register_global_class(StringName(kv.key), kv.value, native_base);
+	}
+
+	// 4. Lint each script.
 	int total_errors = 0;
 	int total_warnings = 0;
 
@@ -216,7 +249,7 @@ int run_lint_dir(const String &p_dir, const String &p_db_path) {
 		total_warnings += file_warnings;
 	}
 
-	// Summary.
+	// 5. Summary.
 	print_line("");
 	print_line("=== Lint Summary ===");
 	print_line(vformat("Scripts:  %d", script_paths.size()));

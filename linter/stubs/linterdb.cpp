@@ -92,8 +92,7 @@ Error LinterDB::load_from_json(const String &p_path) {
 	// Load classes.
 	{
 		Dictionary classes_dict = root.get("classes", Dictionary());
-		List<Variant> class_names;
-		classes_dict.get_key_list(&class_names);
+		LocalVector<Variant> class_names = classes_dict.get_key_list();
 
 		for (const Variant &key : class_names) {
 			String class_name_str = key;
@@ -143,16 +142,14 @@ Error LinterDB::load_from_json(const String &p_path) {
 			// Enums.
 			{
 				Dictionary enums_dict = cls.get("enums", Dictionary());
-				List<Variant> enum_keys;
-				enums_dict.get_key_list(&enum_keys);
+				LocalVector<Variant> enum_keys = enums_dict.get_key_list();
 
 				for (const Variant &ek : enum_keys) {
 					StringName enum_name = StringName(String(ek));
 					Dictionary values = enums_dict[ek];
 					HashMap<StringName, int64_t> enum_values;
 
-					List<Variant> value_keys;
-					values.get_key_list(&value_keys);
+					LocalVector<Variant> value_keys = values.get_key_list();
 					for (const Variant &vk : value_keys) {
 						StringName const_name = StringName(String(vk));
 						int64_t val = values[vk];
@@ -166,8 +163,7 @@ Error LinterDB::load_from_json(const String &p_path) {
 			// Constants (not part of any enum).
 			{
 				Dictionary consts = cls.get("constants", Dictionary());
-				List<Variant> const_keys;
-				consts.get_key_list(&const_keys);
+				LocalVector<Variant> const_keys = consts.get_key_list();
 				for (const Variant &ck : const_keys) {
 					cd.constants[StringName(String(ck))] = (int64_t)consts[ck];
 				}

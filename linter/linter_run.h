@@ -16,7 +16,7 @@ namespace linter {
 // Lint all .gd/.hm/.hmc scripts in p_dir.
 // Optionally loads linterdb.json from p_db_path (empty = use engine ClassDB).
 // Returns 0 if no errors, 1 if errors found.
-int run_lint_dir(const String &p_dir, const String &p_db_path = String());
+int run_lint(const Vector<String> &p_paths, const String &p_db_path = String());
 
 } // namespace linter
 

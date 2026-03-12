@@ -16,14 +16,26 @@
 
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
+#include "modules/gdscript/gdscript_cache.h"
 
 bool ResourceLoader::exists(const String &p_path, const String &p_type_hint) {
 	return FileAccess::exists(p_path);
 }
 
 Ref<Resource> ResourceLoader::load(const String &p_path, const String &p_type_hint, ResourceFormatLoader::CacheMode p_cache_mode, Error *r_error) {
-	// The linter cannot load actual resources.
-	// Cross-script resolution is handled by the linter cache / sandbox registry.
+	// For script files, return a shallow GDScript from the cache so the
+	// analyzer can resolve cross-file type references (e.g. .hm scripts
+	// whose extension doesn't match GDScriptLanguage::get_extension()).
+	String ext = p_path.get_extension().to_lower();
+	if (ext == "gd" || ext == "hm" || ext == "hmc") {
+		Error err = OK;
+		Ref<Resource> scr = GDScriptCache::get_shallow_script(p_path, err);
+		if (r_error) {
+			*r_error = err;
+		}
+		return scr;
+	}
+
 	if (r_error) {
 		*r_error = ERR_UNAVAILABLE;
 	}

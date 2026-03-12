@@ -24,11 +24,15 @@ void StubMethodBind::setup(const StringName &p_name, const StringName &p_instanc
 	set_instance_class(p_instance_class);
 	_set_static(p_static);
 	_is_vararg = p_vararg;
-	set_argument_count(p_arg_count);
 
 	Vector<Variant> defaults;
 	defaults.resize(p_default_arg_count);
 	set_default_arguments(defaults);
+
+	// _generate_argument_types calls _gen_argument_type for each arg,
+	// which reads from arg_infos/return_info. Those must be set BEFORE
+	// calling this — so callers must call set_return_info/set_argument_infos
+	// first, OR we defer this. We defer: see finalize_types().
 }
 
 static StubMethodBind *get_or_create_stub_method(const StringName &p_class, const StringName &p_method) {
@@ -57,6 +61,16 @@ static StubMethodBind *get_or_create_stub_method(const StringName &p_class, cons
 			md->info.arguments.size(),
 			md->info.default_arguments.size());
 	mb->set_return_info(md->info.return_val);
+
+	// Store argument type info so the analyzer can resolve property/method types.
+	Vector<PropertyInfo> arg_infos;
+	for (const PropertyInfo &pi : md->info.arguments) {
+		arg_infos.push_back(pi);
+	}
+	mb->set_argument_infos(arg_infos);
+
+	// Populate the argument_types array now that return_info and arg_infos are set.
+	mb->finalize_types();
 
 	stub_method_binds[key] = mb;
 	return mb;

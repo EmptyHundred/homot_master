@@ -14,13 +14,25 @@ PRACTICAL BUILD APPROACH:
         if env.get("linter", False):
             SConscript("linter/SCsub")
 
-    Then build with:
+    Build commands:
+        # Alongside an editor build (reuses editor libs, ~145MB):
+        scons platform=windows target=editor linter=yes
+
+        # Minimal size (~61MB, needs template_debug libs):
+        scons platform=windows target=template_debug linter=yes
+
+        # Development (with debug symbols, ~220MB):
         scons platform=windows target=editor dev_build=yes linter=yes
 
     This produces bin/homot-linter alongside the main engine binary.
 
+    The template_debug target is recommended for distribution: it strips
+    TOOLS_ENABLED code from engine libs (biggest size win) while keeping
+    DEBUG_ENABLED for GDScript warnings.
+
 FILES COMPILED (linter-specific):
-    linter/main_linter.cpp              - CLI entry point
+    linter/main_linter.cpp              - CLI entry point + engine bootstrap
+    linter/linter_run.cpp               - Lint logic (collect, pre-scan, analyze)
     linter/stubs/linterdb.cpp           - JSON data store
     linter/stubs/classdb_stub.cpp       - ClassDB stub + StubMethodBind
     linter/stubs/engine_stub.cpp        - Engine::has_singleton() stub
@@ -28,8 +40,14 @@ FILES COMPILED (linter-specific):
     linter/stubs/resource_loader_stub.cpp  - ResourceLoader stub
     linter/stubs/script_server_stub.cpp    - ScriptServer stub
 
-LINKED AGAINST:
-    All engine static libraries (core, scene, servers, modules, etc.)
-    The stubs override real implementations at link time because stub
-    .obj files are listed BEFORE the libraries in the link command.
+LINKED AGAINST (subset):
+    core           - Variant, String, Object, FileAccess, etc.
+    drivers        - FileAccess/DirAccess platform implementations
+    servers        - TextServerDummy (GDScript tokenizer dependency)
+    module_gdscript - GDScriptParser, GDScriptAnalyzer, GDScriptCache
+    module_holymolly - HOMOT language extensions
+
+    Scene, editor, and unrelated modules are NOT linked.
+    Stubs override ClassDB/Engine/ProjectSettings/ResourceLoader/ScriptServer
+    at link time (stub .obj listed before engine .lib).
 """

@@ -18,13 +18,26 @@ namespace linter {
 // get_return_info(), get_default_argument_count().
 class StubMethodBind : public MethodBind {
 	PropertyInfo return_info;
+	Vector<PropertyInfo> arg_infos;
 	bool _is_vararg = false;
 
 protected:
 	virtual Variant::Type _gen_argument_type(int p_arg) const override {
+		if (p_arg == -1) {
+			return return_info.type;
+		}
+		if (p_arg >= 0 && p_arg < arg_infos.size()) {
+			return arg_infos[p_arg].type;
+		}
 		return Variant::NIL;
 	}
 	virtual PropertyInfo _gen_argument_type_info(int p_arg) const override {
+		if (p_arg == -1) {
+			return return_info;
+		}
+		if (p_arg >= 0 && p_arg < arg_infos.size()) {
+			return arg_infos[p_arg];
+		}
 		return PropertyInfo();
 	}
 #ifdef DEBUG_ENABLED
@@ -43,7 +56,9 @@ public:
 	virtual bool is_vararg() const override { return _is_vararg; }
 
 	void set_return_info(const PropertyInfo &p_info) { return_info = p_info; }
+	void set_argument_infos(const Vector<PropertyInfo> &p_infos) { arg_infos = p_infos; }
 	void setup(const StringName &p_name, const StringName &p_instance_class, bool p_static, bool p_vararg, int p_arg_count, int p_default_arg_count);
+	void finalize_types() { _generate_argument_types(arg_infos.size()); }
 };
 
 // Manages lifetime of all stub MethodBind instances.
