@@ -858,7 +858,11 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 			} else {
 				String path = ScriptServer::get_global_class_path(first);
 				String ext = path.get_extension();
-				if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+				if (ext == GDScriptLanguage::get_singleton()->get_extension()
+#ifdef HOMOT
+						|| ext == "hm"
+#endif
+				) {
 					Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
 					if (ref.is_null() || ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) != OK) {
 						push_error(vformat(R"(Could not parse global class "%s" from "%s".)", first, ScriptServer::get_global_class_path(first)), p_type);
@@ -3992,7 +3996,11 @@ GDScriptParser::DataType GDScriptAnalyzer::make_global_class_meta_type(const Str
 
 	String path = ScriptServer::get_global_class_path(p_class_name);
 	String ext = path.get_extension();
-	if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+	if (ext == GDScriptLanguage::get_singleton()->get_extension()
+#ifdef HOMOT
+			|| ext == "hm"
+#endif
+	) {
 		Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
 		if (ref.is_null()) {
 			push_error(vformat(R"(Could not find script for class "%s".)", p_class_name), p_source);
