@@ -35,8 +35,6 @@
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
 
-#ifdef DEBUG_ENABLED
-
 #ifdef HOMOT
 // -----------------------------------------------------------------------------
 // GDScript 沙盒辅助函数
@@ -188,6 +186,8 @@ static bool _gdscript_sandbox_check_dynamic_call(GDScriptInstance *p_instance,
 	return _gdscript_sandbox_check_core(profile, profile_id, class_name, p_method_name, p_args, p_argcount, p_script_path, p_line, r_err_text);
 }
 #endif // HOMOT
+
+#ifdef DEBUG_ENABLED
 
 static bool _profile_count_as_native(const Object *p_base_obj, const StringName &p_methodname) {
 	if (!p_base_obj) {
