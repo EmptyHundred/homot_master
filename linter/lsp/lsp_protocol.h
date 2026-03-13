@@ -1,7 +1,7 @@
 /**************************************************************************/
 /*  lsp_protocol.h                                                        */
 /**************************************************************************/
-/*  LSP type definitions — minimal subset for diagnostics-first LSP.      */
+/*  LSP type definitions for the homot-lsp server.                        */
 /**************************************************************************/
 
 #pragma once
@@ -71,18 +71,89 @@ struct Diagnostic {
 };
 
 // ---------------------------------------------------------------------------
+// Completion
+// ---------------------------------------------------------------------------
+
+// CompletionItemKind
+enum CompletionItemKind {
+	COMPLETION_KIND_TEXT = 1,
+	COMPLETION_KIND_METHOD = 2,
+	COMPLETION_KIND_FUNCTION = 3,
+	COMPLETION_KIND_CONSTRUCTOR = 4,
+	COMPLETION_KIND_FIELD = 5,
+	COMPLETION_KIND_VARIABLE = 6,
+	COMPLETION_KIND_CLASS = 7,
+	COMPLETION_KIND_INTERFACE = 8,
+	COMPLETION_KIND_MODULE = 9,
+	COMPLETION_KIND_PROPERTY = 10,
+	COMPLETION_KIND_ENUM = 13,
+	COMPLETION_KIND_KEYWORD = 14,
+	COMPLETION_KIND_SNIPPET = 15,
+	COMPLETION_KIND_COLOR = 16,
+	COMPLETION_KIND_FILE = 17,
+	COMPLETION_KIND_CONSTANT = 21,
+	COMPLETION_KIND_ENUM_MEMBER = 20,
+	COMPLETION_KIND_EVENT = 23,
+};
+
+struct CompletionItem {
+	String label;
+	int kind = COMPLETION_KIND_TEXT;
+	String detail;
+	String insert_text; // If empty, label is used.
+
+	Dictionary to_dict() const {
+		Dictionary d;
+		d["label"] = label;
+		d["kind"] = kind;
+		if (!detail.is_empty()) {
+			d["detail"] = detail;
+		}
+		if (!insert_text.is_empty() && insert_text != label) {
+			d["insertText"] = insert_text;
+		}
+		return d;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// Location (for go-to-definition)
+// ---------------------------------------------------------------------------
+
+struct Location {
+	String uri;
+	Range range;
+
+	Dictionary to_dict() const {
+		Dictionary d;
+		d["uri"] = uri;
+		d["range"] = range.to_dict();
+		return d;
+	}
+};
+
+// ---------------------------------------------------------------------------
 // Server capabilities
 // ---------------------------------------------------------------------------
 
 inline Dictionary make_server_capabilities() {
 	Dictionary caps;
 
-	// We support full document sync (client sends entire text on change).
+	// Full document sync.
 	Dictionary text_doc_sync;
 	text_doc_sync["openClose"] = true;
 	text_doc_sync["change"] = 1; // TextDocumentSyncKind.Full
 	text_doc_sync["save"] = true;
 	caps["textDocumentSync"] = text_doc_sync;
+
+	// Completion.
+	Dictionary completion;
+	completion["resolveProvider"] = false;
+	Array trigger_chars;
+	trigger_chars.push_back(".");
+	trigger_chars.push_back("@");
+	completion["triggerCharacters"] = trigger_chars;
+	caps["completionProvider"] = completion;
 
 	return caps;
 }

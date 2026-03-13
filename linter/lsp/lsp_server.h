@@ -16,6 +16,8 @@
 #include "core/templates/vector.h"
 #include "core/variant/dictionary.h"
 
+class GDScriptParser;
+
 namespace lsp {
 
 struct DocumentState {
@@ -52,6 +54,11 @@ class Server {
 	void handle_did_change(const Dictionary &p_params);
 	void handle_did_close(const Dictionary &p_params);
 	void handle_did_save(const Dictionary &p_params);
+
+	// --- Completion ---
+	Dictionary handle_completion(const Variant &p_id, const Dictionary &p_params);
+	String insert_cursor_sentinel(const String &p_source, int p_line, int p_character);
+	void collect_completions_for_context(const GDScriptParser &p_parser, Array &r_items);
 
 	// --- Diagnostics ---
 	void publish_diagnostics(const String &p_uri, const String &p_source);
