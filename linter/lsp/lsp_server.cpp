@@ -976,11 +976,67 @@ Dictionary Server::handle_completion(const Variant &p_id, const Dictionary &p_pa
 // Go-to-definition — AST node finder
 // ---------------------------------------------------------------------------
 
-// Check whether a 1-based parser position contains a 0-based LSP position.
+// Convert a 0-based LSP character offset to the 1-based tab-expanded column
+// that the GDScript tokenizer uses. The tokenizer expands each tab to tab_size
+// columns (default 4), so a single tab character shifts all subsequent columns.
+static int _lsp_to_parser_column(const String &p_source, int p_lsp_line, int p_lsp_character, int p_tab_size = 4) {
+	// Find the start of the target line.
+	int pos = 0;
+	for (int i = 0; i < p_lsp_line && pos < p_source.length(); i++) {
+		while (pos < p_source.length() && p_source[pos] != '\n') {
+			pos++;
+		}
+		if (pos < p_source.length()) {
+			pos++; // skip '\n'
+		}
+	}
+
+	// Walk the line, expanding tabs the same way the tokenizer does.
+	int col = 1; // Parser columns are 1-based.
+	for (int i = 0; i < p_lsp_character && pos < p_source.length() && p_source[pos] != '\n'; i++, pos++) {
+		if (p_source[pos] == '\t') {
+			col += p_tab_size;
+		} else {
+			col++;
+		}
+	}
+	return col;
+}
+
+// Convert a 1-based parser column back to 0-based LSP character offset.
+static int _parser_column_to_lsp(const String &p_source, int p_parser_line, int p_parser_col, int p_tab_size = 4) {
+	// Find the start of the target line (p_parser_line is 1-based).
+	int pos = 0;
+	for (int i = 1; i < p_parser_line && pos < p_source.length(); i++) {
+		while (pos < p_source.length() && p_source[pos] != '\n') {
+			pos++;
+		}
+		if (pos < p_source.length()) {
+			pos++; // skip '\n'
+		}
+	}
+
+	// Walk the line, counting tabs the same way as the tokenizer, until we
+	// reach the target parser column.
+	int col = 1;
+	int chars = 0;
+	while (col < p_parser_col && pos < p_source.length() && p_source[pos] != '\n') {
+		if (p_source[pos] == '\t') {
+			col += p_tab_size;
+		} else {
+			col++;
+		}
+		pos++;
+		chars++;
+	}
+	return chars;
+}
+
+// Check whether a parser node (1-based coordinates) contains the given
+// 1-based parser line and column.
 static bool _node_contains_position(const GDScriptParser::Node *p_node, int p_line, int p_col) {
-	// Parser lines are 1-based; LSP lines are 0-based.
-	int line1 = p_line + 1;
-	int col1 = p_col; // Parser columns are 0-based in practice despite docs.
+	int line1 = p_line;
+	int col1 = p_col;
 
 	if (p_node->start_line > line1 || p_node->end_line < line1) {
 		return false;
@@ -1308,8 +1364,11 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 	parser.parse(source, file_path, false);
 	analyzer.analyze();
 
-	// Find the identifier at the cursor position.
-	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), line, character);
+	// Convert LSP 0-based position to parser 1-based coordinates.
+	int parser_line = line + 1;
+	int parser_col = _lsp_to_parser_column(source, line, character);
+
+	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), parser_line, parser_col);
 	if (!ident) {
 		return make_response(p_id, Variant());
 	}
@@ -1322,11 +1381,23 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 		return make_response(p_id, Variant());
 	}
 
-	// Convert to LSP Location (0-based lines).
+	// Convert to LSP Location (0-based lines, tab-aware columns).
+	String def_source;
+	if (def_path == file_path) {
+		def_source = source;
+	} else {
+		String def_uri = path_to_uri(def_path);
+		if (documents.has(def_uri)) {
+			def_source = documents[def_uri].content;
+		} else {
+			def_source = FileAccess::get_file_as_string(def_path);
+		}
+	}
+
 	Location loc;
 	loc.uri = path_to_uri(def_path);
 	loc.range.start.line = MAX(0, def_line - 1);
-	loc.range.start.character = MAX(0, def_col);
+	loc.range.start.character = def_source.is_empty() ? MAX(0, def_col - 1) : _parser_column_to_lsp(def_source, def_line, def_col);
 	loc.range.end.line = loc.range.start.line;
 	loc.range.end.character = loc.range.start.character;
 
@@ -1427,7 +1498,11 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 	parser.parse(source, file_path, false);
 	analyzer.analyze();
 
-	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), line, character);
+	// Convert LSP 0-based position to parser 1-based coordinates.
+	int parser_line = line + 1;
+	int parser_col = _lsp_to_parser_column(source, line, character);
+
+	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), parser_line, parser_col);
 	if (!ident) {
 		return make_response(p_id, Variant());
 	}
@@ -1445,12 +1520,12 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 	Dictionary hover;
 	hover["contents"] = contents;
 
-	// Include the identifier's range.
+	// Include the identifier's range (convert parser coords to LSP).
 	Range range;
 	range.start.line = MAX(0, ident->start_line - 1);
-	range.start.character = MAX(0, ident->start_column);
+	range.start.character = _parser_column_to_lsp(source, ident->start_line, ident->start_column);
 	range.end.line = MAX(0, ident->end_line - 1);
-	range.end.character = MAX(0, ident->end_column);
+	range.end.character = _parser_column_to_lsp(source, ident->end_line, ident->end_column);
 	hover["range"] = range.to_dict();
 
 	return make_response(p_id, hover);

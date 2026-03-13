@@ -142,8 +142,8 @@ env_lsp.add_source_files(lsp_sources, "lsp/lsp_main.cpp")
 env_lsp.add_source_files(lsp_sources, "lsp/lsp_transport.cpp")
 env_lsp.add_source_files(lsp_sources, "lsp/lsp_server.cpp")
 
-# Stubs are shared with the linter.
-env_lsp.add_source_files(lsp_sources, "stubs/*.cpp")
+# Reuse stub objects already compiled for the linter (avoid duplicate targets).
+lsp_sources += [s for s in linter_sources if "stubs" in str(s)]
 
 # Same engine override sources as the linter.
 for src in engine_override_sources:
