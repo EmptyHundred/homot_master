@@ -1218,11 +1218,10 @@ SConscript("platform/SCsub")
 SConscript("modules/SCsub")
 if env["tests"]:
     SConscript("tests/SCsub")
-SConscript("main/SCsub")
-
-SConscript("platform/" + env["platform"] + "/SCsub")  # Build selected platform.
-
-if env["linter"]:
+if not env["linter"]:
+    SConscript("main/SCsub")
+    SConscript("platform/" + env["platform"] + "/SCsub")  # Build selected platform.
+else:
     SConscript("linter/SCsub")
 
 # Microsoft Visual Studio Project Generation

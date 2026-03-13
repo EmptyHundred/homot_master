@@ -128,3 +128,27 @@ for src in engine_override_sources:
 
 # Build as a separate program.
 prog = env_linter.add_program("#bin/linter/homot-linter", linter_sources)
+
+# ---------------------------------------------------------------------------
+# LSP server binary — same engine bootstrap, different entry point.
+# ---------------------------------------------------------------------------
+
+env_lsp = env_linter.Clone()
+
+lsp_sources = []
+
+# LSP-specific source files.
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_main.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_transport.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_server.cpp")
+
+# Stubs are shared with the linter.
+env_lsp.add_source_files(lsp_sources, "stubs/*.cpp")
+
+# Same engine override sources as the linter.
+for src in engine_override_sources:
+    obj_base = os.path.splitext(os.path.basename(src))[0]
+    target = "lsp_override/" + obj_base
+    lsp_sources.append(env_lsp.Object(target, "#" + src))
+
+lsp_prog = env_lsp.add_program("#bin/linter/homot-lsp", lsp_sources)

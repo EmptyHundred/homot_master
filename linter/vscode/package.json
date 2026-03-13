@@ -1,0 +1,63 @@
+{
+  "name": "homot-lsp",
+  "displayName": "Homot GDScript",
+  "description": "GDScript language support via homot-lsp",
+  "version": "0.1.0",
+  "publisher": "homot",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:gdscript",
+    "onLanguage:hmscript"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gdscript",
+        "aliases": ["GDScript"],
+        "extensions": [".gd"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "hmscript",
+        "aliases": ["HMScript"],
+        "extensions": [".hm", ".hmc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gdscript",
+        "scopeName": "source.gdscript",
+        "path": "./syntaxes/gdscript.tmLanguage.json"
+      },
+      {
+        "language": "hmscript",
+        "scopeName": "source.gdscript",
+        "path": "./syntaxes/gdscript.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Homot LSP",
+      "properties": {
+        "homotLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to homot-lsp executable. If empty, uses the bundled binary."
+        },
+        "homotLsp.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to linterdb.json. If empty, looks for it in the workspace root."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
