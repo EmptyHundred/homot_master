@@ -160,34 +160,81 @@ PLAIN_TEXT                   →  Keyword (14)
 
 ## Feature: Go-to-Definition
 
-**Status: Planned (Phase 2)**
+**Status: Implemented**
 
-After parse+analyze, every `IdentifierNode` has:
-- `source` enum: where the identifier was defined (LOCAL_VARIABLE, MEMBER_FUNCTION, NATIVE_CLASS, etc.)
-- Pointer to the source node (e.g., `variable_source`, `function_source`)
+Ctrl+click or F12 on any identifier jumps to its definition.
 
-Implementation:
-1. Parse + analyze the file normally
-2. Walk the AST to find the `IdentifierNode` at the cursor position (match start_line/start_column/end_column)
-3. Read `identifier->source`:
-   - Local/member sources → return the source node's file + start_line
-   - Global class → look up in `class_to_path` map
-   - Native class → no location available (return null)
-4. Return LSP `Location { uri, range }`
+### How It Works
+
+1. Parse + analyze the file normally (no sentinel needed)
+2. Walk the AST recursively to find the deepest `IdentifierNode` at cursor position
+3. Read `identifier->source` enum to determine origin:
+
+| Source | Resolution |
+|---|---|
+| `FUNCTION_PARAMETER` | `parameter_source->start_line` in same file |
+| `LOCAL_VARIABLE`, `MEMBER_VARIABLE`, `INHERITED_VARIABLE`, `STATIC_VARIABLE` | `variable_source->start_line` in same file |
+| `LOCAL_CONSTANT`, `MEMBER_CONSTANT` | `constant_source->start_line` in same file |
+| `MEMBER_FUNCTION` | `function_source->start_line` in same file |
+| `MEMBER_SIGNAL` | `signal_source->start_line` in same file |
+| `MEMBER_CLASS` | `datatype.class_type->start_line` in same file |
+| `LOCAL_ITERATOR`, `LOCAL_BIND` | `bind_source->start_line` in same file |
+| `NATIVE_CLASS` | No location (returns null) |
+| Global class name (fallback) | Looked up in `class_to_path` map |
+
+4. Return LSP `Location { uri, range }` with 0-based line conversion
 
 ### AST Node Finding
 
-To find a node at (line, col):
-- Start from `parser.get_tree()` (root ClassNode)
-- Walk members → for functions, walk `body` (SuiteNode) → statements
-- Compare `node->start_line`, `node->start_column`, `node->end_line`, `node->end_column`
-- Return the most specific (deepest) node containing the position
+The tree walker recursively descends through:
+- `ClassNode::members` → functions, variables, inner classes
+- `FunctionNode::body` → `SuiteNode`
+- `SuiteNode::statements` → all statement types (if, for, while, match, return, assignment, expressions)
+- Expression nodes → call arguments, binary/unary/ternary operands, subscript base/attribute
+
+At each level, `_node_contains_position()` checks whether the node's `start_line..end_line` / `start_column..end_column` range contains the cursor, and prefers the deepest (most specific) match.
+
+### Supported Patterns
+
+- `var x = ...` → jump from usage of `x` to its `var` declaration
+- `func foo():` → jump from call `foo()` to its `func` definition
+- `signal my_sig` → jump from `my_sig.emit()` to signal declaration
+- `class_name Foo` → jump from `Foo` usage in another file to the class file
+- Function parameters → jump to the parameter in the function signature
+- `for i in range(10):` → jump from usage of `i` to the `for` statement
+- Inner classes, constants, enums → jump to their declaration
 
 ## Feature: Hover
 
-**Status: Planned (Phase 3)**
+**Status: Implemented**
 
-Same node-finding as go-to-definition, but returns the node's `DataType` formatted as a string instead of a location.
+Mouse-over any identifier to see its type and declaration kind.
+
+### How It Works
+
+Reuses the same AST walker as go-to-definition (`_find_identifier_at_position`):
+1. Parse + analyze the file
+2. Find the `IdentifierNode` at cursor position
+3. Format the hover text based on `identifier->source` and `identifier->datatype`
+
+### Hover Text Format
+
+Displayed as a GDScript markdown code block:
+
+| Source | Hover text |
+|---|---|
+| Parameter | `(parameter) name: Type` |
+| Local variable | `(local variable) name: Type` |
+| Local constant | `(local constant) name: Type` |
+| Iterator (for loop) | `(iterator) name: Type` |
+| Member variable | `(property) name: Type` |
+| Member constant | `(constant) name: Type` |
+| Member function | `func name(param: Type, ...) -> ReturnType` (full signature) |
+| Signal | `(signal) name` |
+| Inner class | `(class) name` |
+| Native class | `(native class) name` |
+
+For functions, the full signature is reconstructed from the `FunctionNode` — parameter names, types, and return type.
 
 ## Limitations
 

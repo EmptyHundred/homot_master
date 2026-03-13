@@ -380,6 +380,44 @@ void Server::handle_did_save(const Dictionary &p_params) {
 	}
 }
 
+void Server::handle_did_change_watched_files(const Dictionary &p_params) {
+	// Re-scan the workspace for global classes whenever files are
+	// created, deleted, or renamed on disk.
+	Array changes = p_params["changes"];
+	bool needs_rescan = false;
+	for (int i = 0; i < changes.size(); i++) {
+		Dictionary change = changes[i];
+		String uri = change["uri"];
+		String path = uri_to_path(uri);
+		String ext = path.get_extension().to_lower();
+		if (ext == "gd" || ext == "hm" || ext == "hmc") {
+			needs_rescan = true;
+			break;
+		}
+	}
+
+	if (needs_rescan) {
+		scan_workspace_classes();
+
+		// Also pick up class_name from open documents that may not be saved yet.
+		for (const KeyValue<String, DocumentState> &kv : documents) {
+			String cname = _extract_class_name(kv.value.content);
+			if (!cname.is_empty()) {
+				String path = uri_to_path(kv.value.uri);
+				class_to_path[cname] = path;
+				class_to_extends[cname] = _extract_extends(kv.value.content);
+			}
+		}
+
+		register_global_classes();
+
+		// Re-lint all open documents so diagnostics update.
+		for (const KeyValue<String, DocumentState> &kv : documents) {
+			publish_diagnostics(kv.value.uri, kv.value.content);
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Completion
 // ---------------------------------------------------------------------------
@@ -935,6 +973,490 @@ Dictionary Server::handle_completion(const Variant &p_id, const Dictionary &p_pa
 }
 
 // ---------------------------------------------------------------------------
+// Go-to-definition — AST node finder
+// ---------------------------------------------------------------------------
+
+// Check whether a 1-based parser position contains a 0-based LSP position.
+static bool _node_contains_position(const GDScriptParser::Node *p_node, int p_line, int p_col) {
+	// Parser lines are 1-based; LSP lines are 0-based.
+	int line1 = p_line + 1;
+	int col1 = p_col; // Parser columns are 0-based in practice despite docs.
+
+	if (p_node->start_line > line1 || p_node->end_line < line1) {
+		return false;
+	}
+	if (p_node->start_line == line1 && p_node->start_column > col1) {
+		return false;
+	}
+	if (p_node->end_line == line1 && p_node->end_column < col1) {
+		return false;
+	}
+	return true;
+}
+
+// Walk statements in a suite to find the deepest IdentifierNode at position.
+static const GDScriptParser::IdentifierNode *_find_identifier_in_expression(
+		const GDScriptParser::ExpressionNode *p_expr, int p_line, int p_col);
+
+static const GDScriptParser::IdentifierNode *_find_identifier_in_suite(
+		const GDScriptParser::SuiteNode *p_suite, int p_line, int p_col) {
+	if (!p_suite) return nullptr;
+
+	for (int i = 0; i < p_suite->statements.size(); i++) {
+		const GDScriptParser::Node *stmt = p_suite->statements[i];
+		if (!_node_contains_position(stmt, p_line, p_col)) {
+			continue;
+		}
+
+		switch (stmt->type) {
+			case GDScriptParser::Node::VARIABLE: {
+				auto *var = static_cast<const GDScriptParser::VariableNode *>(stmt);
+				if (var->initializer) {
+					auto *found = _find_identifier_in_expression(var->initializer, p_line, p_col);
+					if (found) return found;
+				}
+			} break;
+			case GDScriptParser::Node::ASSIGNMENT: {
+				auto *assign = static_cast<const GDScriptParser::AssignmentNode *>(stmt);
+				auto *found = _find_identifier_in_expression(assign->assignee, p_line, p_col);
+				if (found) return found;
+				found = _find_identifier_in_expression(assign->assigned_value, p_line, p_col);
+				if (found) return found;
+			} break;
+			case GDScriptParser::Node::IF: {
+				auto *if_node = static_cast<const GDScriptParser::IfNode *>(stmt);
+				auto *found = _find_identifier_in_expression(if_node->condition, p_line, p_col);
+				if (found) return found;
+				found = _find_identifier_in_suite(if_node->true_block, p_line, p_col);
+				if (found) return found;
+				found = _find_identifier_in_suite(if_node->false_block, p_line, p_col);
+				if (found) return found;
+			} break;
+			case GDScriptParser::Node::FOR: {
+				auto *for_node = static_cast<const GDScriptParser::ForNode *>(stmt);
+				auto *found = _find_identifier_in_expression(for_node->list, p_line, p_col);
+				if (found) return found;
+				found = _find_identifier_in_suite(for_node->loop, p_line, p_col);
+				if (found) return found;
+			} break;
+			case GDScriptParser::Node::WHILE: {
+				auto *while_node = static_cast<const GDScriptParser::WhileNode *>(stmt);
+				auto *found = _find_identifier_in_expression(while_node->condition, p_line, p_col);
+				if (found) return found;
+				found = _find_identifier_in_suite(while_node->loop, p_line, p_col);
+				if (found) return found;
+			} break;
+			case GDScriptParser::Node::RETURN: {
+				auto *ret = static_cast<const GDScriptParser::ReturnNode *>(stmt);
+				if (ret->return_value) {
+					auto *found = _find_identifier_in_expression(ret->return_value, p_line, p_col);
+					if (found) return found;
+				}
+			} break;
+			case GDScriptParser::Node::MATCH: {
+				auto *match_node = static_cast<const GDScriptParser::MatchNode *>(stmt);
+				auto *found = _find_identifier_in_expression(match_node->test, p_line, p_col);
+				if (found) return found;
+				for (int j = 0; j < match_node->branches.size(); j++) {
+					found = _find_identifier_in_suite(match_node->branches[j]->block, p_line, p_col);
+					if (found) return found;
+				}
+			} break;
+			default: {
+				// For expression statements (bare function calls, etc.)
+				if (stmt->is_expression()) {
+					auto *found = _find_identifier_in_expression(
+							static_cast<const GDScriptParser::ExpressionNode *>(stmt), p_line, p_col);
+					if (found) return found;
+				}
+			} break;
+		}
+	}
+	return nullptr;
+}
+
+static const GDScriptParser::IdentifierNode *_find_identifier_in_expression(
+		const GDScriptParser::ExpressionNode *p_expr, int p_line, int p_col) {
+	if (!p_expr) return nullptr;
+
+	switch (p_expr->type) {
+		case GDScriptParser::Node::IDENTIFIER: {
+			if (_node_contains_position(p_expr, p_line, p_col)) {
+				return static_cast<const GDScriptParser::IdentifierNode *>(p_expr);
+			}
+		} break;
+		case GDScriptParser::Node::SUBSCRIPT: {
+			auto *sub = static_cast<const GDScriptParser::SubscriptNode *>(p_expr);
+			if (sub->is_attribute && sub->attribute) {
+				// Check the attribute identifier first (more specific).
+				if (_node_contains_position(sub->attribute, p_line, p_col)) {
+					return sub->attribute;
+				}
+			}
+			// Check base expression.
+			auto *found = _find_identifier_in_expression(sub->base, p_line, p_col);
+			if (found) return found;
+			if (!sub->is_attribute && sub->index) {
+				found = _find_identifier_in_expression(sub->index, p_line, p_col);
+				if (found) return found;
+			}
+		} break;
+		case GDScriptParser::Node::CALL: {
+			auto *call = static_cast<const GDScriptParser::CallNode *>(p_expr);
+			// Check callee.
+			auto *found = _find_identifier_in_expression(call->callee, p_line, p_col);
+			if (found) return found;
+			// Check arguments.
+			for (int i = 0; i < call->arguments.size(); i++) {
+				found = _find_identifier_in_expression(call->arguments[i], p_line, p_col);
+				if (found) return found;
+			}
+		} break;
+		case GDScriptParser::Node::BINARY_OPERATOR: {
+			auto *binop = static_cast<const GDScriptParser::BinaryOpNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(binop->left_operand, p_line, p_col);
+			if (found) return found;
+			found = _find_identifier_in_expression(binop->right_operand, p_line, p_col);
+			if (found) return found;
+		} break;
+		case GDScriptParser::Node::UNARY_OPERATOR: {
+			auto *unop = static_cast<const GDScriptParser::UnaryOpNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(unop->operand, p_line, p_col);
+			if (found) return found;
+		} break;
+		case GDScriptParser::Node::TERNARY_OPERATOR: {
+			auto *ternop = static_cast<const GDScriptParser::TernaryOpNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(ternop->true_expr, p_line, p_col);
+			if (found) return found;
+			found = _find_identifier_in_expression(ternop->false_expr, p_line, p_col);
+			if (found) return found;
+			found = _find_identifier_in_expression(ternop->condition, p_line, p_col);
+			if (found) return found;
+		} break;
+		case GDScriptParser::Node::ASSIGNMENT: {
+			auto *assign = static_cast<const GDScriptParser::AssignmentNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(assign->assignee, p_line, p_col);
+			if (found) return found;
+			found = _find_identifier_in_expression(assign->assigned_value, p_line, p_col);
+			if (found) return found;
+		} break;
+		case GDScriptParser::Node::CAST: {
+			auto *cast = static_cast<const GDScriptParser::CastNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(cast->operand, p_line, p_col);
+			if (found) return found;
+		} break;
+		case GDScriptParser::Node::AWAIT: {
+			auto *aw = static_cast<const GDScriptParser::AwaitNode *>(p_expr);
+			auto *found = _find_identifier_in_expression(aw->to_await, p_line, p_col);
+			if (found) return found;
+		} break;
+		default:
+			break;
+	}
+	return nullptr;
+}
+
+// Find an IdentifierNode at position by walking the full class AST.
+static const GDScriptParser::IdentifierNode *_find_identifier_at_position(
+		const GDScriptParser::ClassNode *p_class, int p_line, int p_col) {
+	if (!p_class) return nullptr;
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const GDScriptParser::ClassNode::Member &member = p_class->members[i];
+
+		switch (member.type) {
+			case GDScriptParser::ClassNode::Member::FUNCTION: {
+				const GDScriptParser::FunctionNode *func = member.function;
+				if (!func->body) continue;
+				if (!_node_contains_position(func, p_line, p_col)) continue;
+				auto *found = _find_identifier_in_suite(func->body, p_line, p_col);
+				if (found) return found;
+			} break;
+			case GDScriptParser::ClassNode::Member::VARIABLE: {
+				const GDScriptParser::VariableNode *var = member.variable;
+				if (var->initializer && _node_contains_position(var, p_line, p_col)) {
+					auto *found = _find_identifier_in_expression(var->initializer, p_line, p_col);
+					if (found) return found;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::CLASS: {
+				// Recurse into inner classes.
+				auto *found = _find_identifier_at_position(member.m_class, p_line, p_col);
+				if (found) return found;
+			} break;
+			default:
+				break;
+		}
+	}
+	return nullptr;
+}
+
+// Resolve an IdentifierNode's definition location. Returns false if no location.
+static bool _resolve_identifier_location(
+		const GDScriptParser::IdentifierNode *p_id,
+		const String &p_current_path,
+		const HashMap<String, String> &p_class_to_path,
+		String &r_path, int &r_line, int &r_col) {
+
+	switch (p_id->source) {
+		case GDScriptParser::IdentifierNode::FUNCTION_PARAMETER: {
+			if (p_id->parameter_source) {
+				r_path = p_current_path;
+				r_line = p_id->parameter_source->start_line;
+				r_col = p_id->parameter_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::LOCAL_VARIABLE:
+		case GDScriptParser::IdentifierNode::MEMBER_VARIABLE:
+		case GDScriptParser::IdentifierNode::INHERITED_VARIABLE:
+		case GDScriptParser::IdentifierNode::STATIC_VARIABLE: {
+			if (p_id->variable_source) {
+				r_path = p_current_path;
+				r_line = p_id->variable_source->start_line;
+				r_col = p_id->variable_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::LOCAL_CONSTANT:
+		case GDScriptParser::IdentifierNode::MEMBER_CONSTANT: {
+			if (p_id->constant_source) {
+				r_path = p_current_path;
+				r_line = p_id->constant_source->start_line;
+				r_col = p_id->constant_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::MEMBER_FUNCTION: {
+			if (p_id->function_source) {
+				r_path = p_current_path;
+				r_line = p_id->function_source->start_line;
+				r_col = p_id->function_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::MEMBER_SIGNAL: {
+			if (p_id->signal_source) {
+				r_path = p_current_path;
+				r_line = p_id->signal_source->start_line;
+				r_col = p_id->signal_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::MEMBER_CLASS: {
+			// Inner class — the identifier's datatype should have the class_type.
+			if (p_id->datatype.kind == GDScriptParser::DataType::CLASS && p_id->datatype.class_type) {
+				r_path = p_current_path;
+				r_line = p_id->datatype.class_type->start_line;
+				r_col = p_id->datatype.class_type->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::LOCAL_ITERATOR:
+		case GDScriptParser::IdentifierNode::LOCAL_BIND: {
+			if (p_id->bind_source) {
+				r_path = p_current_path;
+				r_line = p_id->bind_source->start_line;
+				r_col = p_id->bind_source->start_column;
+				return true;
+			}
+		} break;
+		case GDScriptParser::IdentifierNode::NATIVE_CLASS: {
+			// No source location for native classes.
+			return false;
+		} break;
+		default:
+			break;
+	}
+
+	// Fallback: check if this is a global class name.
+	String name_str = p_id->name;
+	if (p_class_to_path.has(name_str)) {
+		r_path = p_class_to_path[name_str];
+		r_line = 1;
+		r_col = 0;
+		return true;
+	}
+
+	return false;
+}
+
+Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_params) {
+	Dictionary td = p_params["textDocument"];
+	String uri = td["uri"];
+	Dictionary pos_dict = p_params["position"];
+	int line = pos_dict["line"];       // 0-based
+	int character = pos_dict["character"]; // 0-based
+
+	// Get document source.
+	String source;
+	if (documents.has(uri)) {
+		source = documents[uri].content;
+	} else {
+		source = FileAccess::get_file_as_string(uri_to_path(uri));
+	}
+
+	if (source.is_empty()) {
+		return make_response(p_id, Variant());
+	}
+
+	String file_path = uri_to_path(uri);
+
+	GDScriptParser parser;
+	GDScriptAnalyzer analyzer(&parser);
+
+	parser.parse(source, file_path, false);
+	analyzer.analyze();
+
+	// Find the identifier at the cursor position.
+	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), line, character);
+	if (!ident) {
+		return make_response(p_id, Variant());
+	}
+
+	// Resolve location.
+	String def_path;
+	int def_line = 0;
+	int def_col = 0;
+	if (!_resolve_identifier_location(ident, file_path, class_to_path, def_path, def_line, def_col)) {
+		return make_response(p_id, Variant());
+	}
+
+	// Convert to LSP Location (0-based lines).
+	Location loc;
+	loc.uri = path_to_uri(def_path);
+	loc.range.start.line = MAX(0, def_line - 1);
+	loc.range.start.character = MAX(0, def_col);
+	loc.range.end.line = loc.range.start.line;
+	loc.range.end.character = loc.range.start.character;
+
+	return make_response(p_id, loc.to_dict());
+}
+
+// ---------------------------------------------------------------------------
+// Hover
+// ---------------------------------------------------------------------------
+
+// Format a DataType into a readable hover string.
+static String _format_datatype(const GDScriptParser::DataType &p_type) {
+	if (!p_type.is_set()) {
+		return "Variant";
+	}
+	return p_type.to_string();
+}
+
+// Build a hover string for an identifier based on its source and type.
+static String _build_hover_text(const GDScriptParser::IdentifierNode *p_id) {
+	String type_str = _format_datatype(p_id->datatype);
+	String name = p_id->name;
+
+	switch (p_id->source) {
+		case GDScriptParser::IdentifierNode::FUNCTION_PARAMETER:
+			return vformat("(parameter) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::LOCAL_VARIABLE:
+			return vformat("(local variable) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::LOCAL_CONSTANT:
+			return vformat("(local constant) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::LOCAL_ITERATOR:
+			return vformat("(iterator) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::LOCAL_BIND:
+			return vformat("(bind) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::MEMBER_VARIABLE:
+		case GDScriptParser::IdentifierNode::INHERITED_VARIABLE:
+		case GDScriptParser::IdentifierNode::STATIC_VARIABLE:
+			return vformat("(property) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::MEMBER_CONSTANT:
+			return vformat("(constant) %s: %s", name, type_str);
+		case GDScriptParser::IdentifierNode::MEMBER_FUNCTION: {
+			if (p_id->function_source) {
+				String sig = "func " + name + "(";
+				for (int i = 0; i < p_id->function_source->parameters.size(); i++) {
+					if (i > 0) sig += ", ";
+					const GDScriptParser::ParameterNode *param = p_id->function_source->parameters[i];
+					sig += param->identifier->name;
+					if (param->datatype_specifier || param->get_datatype().is_set()) {
+						sig += ": " + _format_datatype(param->get_datatype());
+					}
+				}
+				sig += ")";
+				GDScriptParser::DataType ret = p_id->function_source->get_datatype();
+				if (ret.is_set() && ret.builtin_type != Variant::NIL) {
+					sig += " -> " + _format_datatype(ret);
+				}
+				return sig;
+			}
+			return vformat("(method) %s: %s", name, type_str);
+		}
+		case GDScriptParser::IdentifierNode::MEMBER_SIGNAL:
+			return vformat("(signal) %s", name);
+		case GDScriptParser::IdentifierNode::MEMBER_CLASS:
+			return vformat("(class) %s", name);
+		case GDScriptParser::IdentifierNode::NATIVE_CLASS:
+			return vformat("(native class) %s", name);
+		default:
+			if (type_str != "Variant") {
+				return vformat("%s: %s", name, type_str);
+			}
+			return name;
+	}
+}
+
+Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params) {
+	Dictionary td = p_params["textDocument"];
+	String uri = td["uri"];
+	Dictionary pos_dict = p_params["position"];
+	int line = pos_dict["line"];
+	int character = pos_dict["character"];
+
+	String source;
+	if (documents.has(uri)) {
+		source = documents[uri].content;
+	} else {
+		source = FileAccess::get_file_as_string(uri_to_path(uri));
+	}
+
+	if (source.is_empty()) {
+		return make_response(p_id, Variant());
+	}
+
+	String file_path = uri_to_path(uri);
+
+	GDScriptParser parser;
+	GDScriptAnalyzer analyzer(&parser);
+
+	parser.parse(source, file_path, false);
+	analyzer.analyze();
+
+	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), line, character);
+	if (!ident) {
+		return make_response(p_id, Variant());
+	}
+
+	String hover_text = _build_hover_text(ident);
+	if (hover_text.is_empty()) {
+		return make_response(p_id, Variant());
+	}
+
+	// Build Hover response with markdown content.
+	Dictionary contents;
+	contents["kind"] = "markdown";
+	contents["value"] = "```gdscript\n" + hover_text + "\n```";
+
+	Dictionary hover;
+	hover["contents"] = contents;
+
+	// Include the identifier's range.
+	Range range;
+	range.start.line = MAX(0, ident->start_line - 1);
+	range.start.character = MAX(0, ident->start_column);
+	range.end.line = MAX(0, ident->end_line - 1);
+	range.end.character = MAX(0, ident->end_column);
+	hover["range"] = range.to_dict();
+
+	return make_response(p_id, hover);
+}
+
+// ---------------------------------------------------------------------------
 // Message dispatch
 // ---------------------------------------------------------------------------
 
@@ -976,6 +1498,16 @@ bool Server::process_message(const Dictionary &p_msg) {
 		return true;
 	}
 
+	if (method == "textDocument/definition") {
+		Transport::write_message(handle_definition(id, params));
+		return true;
+	}
+
+	if (method == "textDocument/hover") {
+		Transport::write_message(handle_hover(id, params));
+		return true;
+	}
+
 	if (method == "textDocument/didOpen") {
 		handle_did_open(params);
 		return true;
@@ -993,6 +1525,11 @@ bool Server::process_message(const Dictionary &p_msg) {
 
 	if (method == "textDocument/didSave") {
 		handle_did_save(params);
+		return true;
+	}
+
+	if (method == "workspace/didChangeWatchedFiles") {
+		handle_did_change_watched_files(params);
 		return true;
 	}
 

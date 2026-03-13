@@ -155,6 +155,12 @@ inline Dictionary make_server_capabilities() {
 	completion["triggerCharacters"] = trigger_chars;
 	caps["completionProvider"] = completion;
 
+	// Go-to-definition.
+	caps["definitionProvider"] = true;
+
+	// Hover.
+	caps["hoverProvider"] = true;
+
 	return caps;
 }
 
