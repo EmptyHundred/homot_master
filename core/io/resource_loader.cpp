@@ -43,7 +43,13 @@
 #include "core/string/translation_server.h"
 #include "core/templates/rb_set.h"
 #include "core/variant/variant_parser.h"
+#ifndef HOMOT_LINTER
 #include "servers/rendering/rendering_server.h"
+#endif
+
+#ifdef HOMOT_LINTER
+#include "modules/gdscript/gdscript_cache.h"
+#endif
 
 #ifdef DEBUG_LOAD_THREADED
 #define print_lt(m_text) print_line(m_text)
@@ -538,6 +544,23 @@ void ResourceLoader::_load_threaded_request_setup_user_token(LoadToken *p_token,
 	print_lt("REQUEST: user load tokens: " + itos(user_load_tokens.size()));
 }
 
+#ifdef HOMOT_LINTER
+Ref<Resource> ResourceLoader::load(const String &p_path, const String &p_type_hint, ResourceFormatLoader::CacheMode p_cache_mode, Error *r_error) {
+	String ext = p_path.get_extension().to_lower();
+	if (ext == "gd" || ext == "hm" || ext == "hmc") {
+		Error err = OK;
+		Ref<Resource> scr = GDScriptCache::get_shallow_script(p_path, err);
+		if (r_error) {
+			*r_error = err;
+		}
+		return scr;
+	}
+	if (r_error) {
+		*r_error = ERR_UNAVAILABLE;
+	}
+	return Ref<Resource>();
+}
+#else
 Ref<Resource> ResourceLoader::load(const String &p_path, const String &p_type_hint, ResourceFormatLoader::CacheMode p_cache_mode, Error *r_error) {
 	if (r_error) {
 		*r_error = OK;
@@ -562,6 +585,7 @@ Ref<Resource> ResourceLoader::load(const String &p_path, const String &p_type_hi
 	Ref<Resource> res = _load_complete(*load_token.ptr(), r_error);
 	return res;
 }
+#endif
 
 Ref<ResourceLoader::LoadToken> ResourceLoader::_load_start(const String &p_path, const String &p_type_hint, LoadThreadMode p_thread_mode, ResourceFormatLoader::CacheMode p_cache_mode, bool p_for_user) {
 	String local_path = _validate_local_path(p_path);
@@ -950,6 +974,11 @@ Ref<Resource> ResourceLoader::_load_complete_inner(LoadToken &p_load_token, Erro
 	return resource;
 }
 
+#ifdef HOMOT_LINTER
+bool ResourceLoader::_ensure_load_progress() {
+	return false;
+}
+#else
 bool ResourceLoader::_ensure_load_progress() {
 	// Some servers may need a new engine iteration to allow the load to progress.
 	// Since the only known one is the rendering server (in single thread mode), let's keep it simple and just sync it.
@@ -960,6 +989,7 @@ bool ResourceLoader::_ensure_load_progress() {
 	RenderingServer::get_singleton()->sync();
 	return true;
 }
+#endif
 
 void ResourceLoader::resource_changed_connect(Resource *p_source, const Callable &p_callable, uint32_t p_flags) {
 	print_lt(vformat("%d\t%ud:%s\t" FUNCTION_STR "\t%d", Thread::get_caller_id(), p_source->get_instance_id(), p_source->get_class(), p_callable.get_object_id()));
@@ -1005,6 +1035,11 @@ void ResourceLoader::resource_changed_emit(Resource *p_source) {
 	}
 }
 
+#ifdef HOMOT_LINTER
+Ref<Resource> ResourceLoader::ensure_resource_ref_override_for_outer_load(const String &p_path, const String &p_res_type) {
+	return Ref<Resource>();
+}
+#else
 Ref<Resource> ResourceLoader::ensure_resource_ref_override_for_outer_load(const String &p_path, const String &p_res_type) {
 	ERR_FAIL_COND_V(load_nesting == 0, Ref<Resource>()); // It makes no sense to use this from nesting level 0.
 	const String &local_path = _validate_local_path(p_path);
@@ -1024,6 +1059,7 @@ Ref<Resource> ResourceLoader::ensure_resource_ref_override_for_outer_load(const 
 		return res;
 	}
 }
+#endif
 
 Ref<Resource> ResourceLoader::get_resource_ref_override(const String &p_path) {
 	DEV_ASSERT(p_path == _validate_local_path(p_path));
@@ -1039,6 +1075,11 @@ Ref<Resource> ResourceLoader::get_resource_ref_override(const String &p_path) {
 	return F->value;
 }
 
+#ifdef HOMOT_LINTER
+bool ResourceLoader::exists(const String &p_path, const String &p_type_hint) {
+	return FileAccess::exists(p_path);
+}
+#else
 bool ResourceLoader::exists(const String &p_path, const String &p_type_hint) {
 	String local_path = _validate_local_path(p_path);
 
@@ -1062,6 +1103,7 @@ bool ResourceLoader::exists(const String &p_path, const String &p_type_hint) {
 
 	return false;
 }
+#endif
 
 void ResourceLoader::add_resource_format_loader(Ref<ResourceFormatLoader> p_format_loader, bool p_at_front) {
 	ERR_FAIL_COND(p_format_loader.is_null());
@@ -1179,6 +1221,21 @@ void ResourceLoader::get_classes_used(const String &p_path, HashSet<StringName> 
 	}
 }
 
+#ifdef HOMOT_LINTER
+String ResourceLoader::get_resource_type(const String &p_path) {
+	String ext = p_path.get_extension().to_lower();
+	if (ext == "gd" || ext == "hm" || ext == "hmc") {
+		return "GDScript";
+	} else if (ext == "tscn") {
+		return "PackedScene";
+	} else if (ext == "tres" || ext == "res") {
+		return "Resource";
+	} else if (ext == "gdshader" || ext == "shader") {
+		return "Shader";
+	}
+	return "";
+}
+#else
 String ResourceLoader::get_resource_type(const String &p_path) {
 	String local_path = _validate_local_path(p_path);
 
@@ -1191,6 +1248,7 @@ String ResourceLoader::get_resource_type(const String &p_path) {
 
 	return "";
 }
+#endif
 
 String ResourceLoader::get_resource_script_class(const String &p_path) {
 	String local_path = _validate_local_path(p_path);
@@ -1331,9 +1389,15 @@ String ResourceLoader::import_remap(const String &p_path) {
 	return p_path;
 }
 
+#ifdef HOMOT_LINTER
+String ResourceLoader::path_remap(const String &p_path) {
+	return p_path;
+}
+#else
 String ResourceLoader::path_remap(const String &p_path) {
 	return _path_remap(p_path);
 }
+#endif
 
 void ResourceLoader::reload_translation_remaps() {
 	List<Resource *> to_reload;

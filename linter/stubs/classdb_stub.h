@@ -65,6 +65,9 @@ public:
 void init_classdb_stubs();
 void cleanup_classdb_stubs();
 
+// Lazily create a StubMethodBind for the given class/method from LinterDB.
+StubMethodBind *get_or_create_stub_method(const StringName &p_class, const StringName &p_method);
+
 } // namespace linter
 
 #endif // HOMOT

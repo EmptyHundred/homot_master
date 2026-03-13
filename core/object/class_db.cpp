@@ -36,6 +36,12 @@
 #include "core/templates/sort_array.h"
 #include "core/version.h"
 
+#ifdef HOMOT_LINTER
+#include "linter/stubs/classdb_stub.h"
+#include "linter/stubs/linterdb.h"
+#define LINTER_DB() linter::LinterDB::get_singleton()
+#endif
+
 #ifdef DEBUG_ENABLED
 
 MethodDefinition D_METHODP(const char *p_name, const char *const **p_args, uint32_t p_argcount) {
@@ -235,12 +241,25 @@ bool ClassDB::_is_parent_class(const StringName &p_class, const StringName &p_in
 	return false;
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::is_parent_class(const StringName &p_class, const StringName &p_inherits) {
+	return LINTER_DB() && LINTER_DB()->is_parent_class(p_class, p_inherits);
+}
+#else
 bool ClassDB::is_parent_class(const StringName &p_class, const StringName &p_inherits) {
 	Locker::Lock lock(Locker::STATE_READ);
 
 	return _is_parent_class(p_class, p_inherits);
 }
+#endif
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_class_list(LocalVector<StringName> &p_classes) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_class_list(p_classes);
+	}
+}
+#else
 // This function only sorts items added by this function.
 // If `p_classes` is not empty before calling and a global sort is needed, caller must handle that separately.
 void ClassDB::get_class_list(LocalVector<StringName> &p_classes) {
@@ -258,6 +277,7 @@ void ClassDB::get_class_list(LocalVector<StringName> &p_classes) {
 	SortArray<StringName, StringName::AlphCompare> sorter;
 	sorter.sort(&p_classes[p_classes.size() - classes.size()], classes.size());
 }
+#endif
 
 #ifdef TOOLS_ENABLED
 // This function only sorts items added by this function.
@@ -320,6 +340,11 @@ void ClassDB::get_direct_inheriters_from_class(const StringName &p_class, List<S
 	}
 }
 
+#ifdef HOMOT_LINTER
+StringName ClassDB::get_parent_class_nocheck(const StringName &p_class) {
+	return LINTER_DB() ? LINTER_DB()->get_parent_class(p_class) : StringName();
+}
+#else
 StringName ClassDB::get_parent_class_nocheck(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -329,6 +354,7 @@ StringName ClassDB::get_parent_class_nocheck(const StringName &p_class) {
 	}
 	return ti->inherits;
 }
+#endif
 
 bool ClassDB::get_inheritance_chain_nocheck(const StringName &p_class, Vector<StringName> &r_result) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -371,11 +397,17 @@ StringName ClassDB::_get_parent_class(const StringName &p_class) {
 	return ti->inherits;
 }
 
+#ifdef HOMOT_LINTER
+StringName ClassDB::get_parent_class(const StringName &p_class) {
+	return LINTER_DB() ? LINTER_DB()->get_parent_class(p_class) : StringName();
+}
+#else
 StringName ClassDB::get_parent_class(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);
 
 	return _get_parent_class(p_class);
 }
+#endif
 
 ClassDB::APIType ClassDB::get_api_type(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -535,10 +567,16 @@ uint32_t ClassDB::get_api_hash(APIType p_api) {
 #endif // DEBUG_ENABLED
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::class_exists(const StringName &p_class) {
+	return LINTER_DB() && LINTER_DB()->class_exists(p_class);
+}
+#else
 bool ClassDB::class_exists(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);
 	return classes.has(p_class);
 }
+#endif
 
 void ClassDB::add_compatibility_class(const StringName &p_class, const StringName &p_fallback) {
 	Locker::Lock lock(Locker::STATE_WRITE);
@@ -825,6 +863,11 @@ use_script:
 	return scr.is_valid() && scr->is_valid() && !scr->is_abstract();
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::is_abstract(const StringName &p_class) {
+	return LINTER_DB() && LINTER_DB()->is_abstract(p_class);
+}
+#else
 bool ClassDB::is_abstract(const StringName &p_class) {
 	String script_path;
 	{
@@ -856,6 +899,7 @@ use_script:
 	Ref<Script> scr = ResourceLoader::load(script_path);
 	return scr.is_valid() && scr->is_valid() && scr->is_abstract();
 }
+#endif
 
 bool ClassDB::is_virtual(const StringName &p_class) {
 	String script_path;
@@ -929,6 +973,13 @@ static MethodInfo info_from_bind(MethodBind *p_method) {
 	return minfo;
 }
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_method_list(const StringName &p_class, List<MethodInfo> *p_methods, bool p_no_inheritance, bool p_exclude_from_properties) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_method_list(p_class, p_methods, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_method_list(const StringName &p_class, List<MethodInfo> *p_methods, bool p_no_inheritance, bool p_exclude_from_properties) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -974,6 +1025,7 @@ void ClassDB::get_method_list(const StringName &p_class, List<MethodInfo> *p_met
 		type = type->inherits_ptr;
 	}
 }
+#endif
 
 void ClassDB::get_method_list_with_compatibility(const StringName &p_class, List<Pair<MethodInfo, uint32_t>> *p_methods, bool p_no_inheritance, bool p_exclude_from_properties) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -1035,6 +1087,11 @@ void ClassDB::get_method_list_with_compatibility(const StringName &p_class, List
 	}
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::get_method_info(const StringName &p_class, const StringName &p_method, MethodInfo *r_info, bool p_no_inheritance, bool p_exclude_from_properties) {
+	return LINTER_DB() && LINTER_DB()->get_method_info(p_class, p_method, r_info);
+}
+#else
 bool ClassDB::get_method_info(const StringName &p_class, const StringName &p_method, MethodInfo *r_info, bool p_no_inheritance, bool p_exclude_from_properties) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1084,7 +1141,13 @@ bool ClassDB::get_method_info(const StringName &p_class, const StringName &p_met
 
 	return false;
 }
+#endif
 
+#ifdef HOMOT_LINTER
+MethodBind *ClassDB::get_method(const StringName &p_class, const StringName &p_name) {
+	return linter::get_or_create_stub_method(p_class, p_name);
+}
+#else
 MethodBind *ClassDB::get_method(const StringName &p_class, const StringName &p_name) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1099,6 +1162,7 @@ MethodBind *ClassDB::get_method(const StringName &p_class, const StringName &p_n
 	}
 	return nullptr;
 }
+#endif
 
 Vector<uint32_t> ClassDB::get_method_compatibility_hashes(const StringName &p_class, const StringName &p_name) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -1191,6 +1255,13 @@ void ClassDB::bind_integer_constant(const StringName &p_class, const StringName 
 #endif // DEBUG_ENABLED
 }
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_integer_constant_list(const StringName &p_class, List<String> *p_constants, bool p_no_inheritance) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_integer_constant_list(p_class, p_constants, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_integer_constant_list(const StringName &p_class, List<String> *p_constants, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1215,7 +1286,13 @@ void ClassDB::get_integer_constant_list(const StringName &p_class, List<String> 
 		type = type->inherits_ptr;
 	}
 }
+#endif
 
+#ifdef HOMOT_LINTER
+int64_t ClassDB::get_integer_constant(const StringName &p_class, const StringName &p_name, bool *p_success) {
+	return LINTER_DB() ? LINTER_DB()->get_integer_constant(p_class, p_name, p_success) : 0;
+}
+#else
 int64_t ClassDB::get_integer_constant(const StringName &p_class, const StringName &p_name, bool *p_success) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1239,7 +1316,13 @@ int64_t ClassDB::get_integer_constant(const StringName &p_class, const StringNam
 
 	return 0;
 }
+#endif
 
+#ifdef HOMOT_LINTER
+bool ClassDB::has_integer_constant(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
+	return LINTER_DB() && LINTER_DB()->has_integer_constant(p_class, p_name, p_no_inheritance);
+}
+#else
 bool ClassDB::has_integer_constant(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1258,7 +1341,13 @@ bool ClassDB::has_integer_constant(const StringName &p_class, const StringName &
 
 	return false;
 }
+#endif
 
+#ifdef HOMOT_LINTER
+StringName ClassDB::get_integer_constant_enum(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
+	return LINTER_DB() ? LINTER_DB()->get_integer_constant_enum(p_class, p_name, p_no_inheritance) : StringName();
+}
+#else
 StringName ClassDB::get_integer_constant_enum(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1282,7 +1371,15 @@ StringName ClassDB::get_integer_constant_enum(const StringName &p_class, const S
 
 	return StringName();
 }
+#endif
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_enum_list(const StringName &p_class, List<StringName> *p_enums, bool p_no_inheritance) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_enum_list(p_class, p_enums, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_enum_list(const StringName &p_class, List<StringName> *p_enums, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1300,7 +1397,15 @@ void ClassDB::get_enum_list(const StringName &p_class, List<StringName> *p_enums
 		type = type->inherits_ptr;
 	}
 }
+#endif
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_enum_constants(const StringName &p_class, const StringName &p_enum, List<StringName> *p_constants, bool p_no_inheritance) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_enum_constants(p_class, p_enum, p_constants, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_enum_constants(const StringName &p_class, const StringName &p_enum, List<StringName> *p_constants, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1322,6 +1427,7 @@ void ClassDB::get_enum_constants(const StringName &p_class, const StringName &p_
 		type = type->inherits_ptr;
 	}
 }
+#endif
 
 void ClassDB::set_method_error_return_values(const StringName &p_class, const StringName &p_method, const Vector<Error> &p_values) {
 #ifdef DEBUG_ENABLED
@@ -1350,6 +1456,11 @@ Vector<Error> ClassDB::get_method_error_return_values(const StringName &p_class,
 #endif // DEBUG_ENABLED
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::has_enum(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
+	return LINTER_DB() && LINTER_DB()->has_enum(p_class, p_name, p_no_inheritance);
+}
+#else
 bool ClassDB::has_enum(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1368,6 +1479,7 @@ bool ClassDB::has_enum(const StringName &p_class, const StringName &p_name, bool
 
 	return false;
 }
+#endif
 
 bool ClassDB::is_enum_bitfield(const StringName &p_class, const StringName &p_name, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -1407,6 +1519,13 @@ void ClassDB::add_signal(const StringName &p_class, const MethodInfo &p_signal) 
 	type->signal_map[sname] = p_signal;
 }
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_signal_list(const StringName &p_class, List<MethodInfo> *p_signals, bool p_no_inheritance) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_signal_list(p_class, p_signals, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_signal_list(const StringName &p_class, List<MethodInfo> *p_signals, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1427,7 +1546,13 @@ void ClassDB::get_signal_list(const StringName &p_class, List<MethodInfo> *p_sig
 		check = check->inherits_ptr;
 	}
 }
+#endif
 
+#ifdef HOMOT_LINTER
+bool ClassDB::has_signal(const StringName &p_class, const StringName &p_signal, bool p_no_inheritance) {
+	return LINTER_DB() && LINTER_DB()->has_signal(p_class, p_signal, p_no_inheritance);
+}
+#else
 bool ClassDB::has_signal(const StringName &p_class, const StringName &p_signal, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
 	ClassInfo *type = classes.getptr(p_class);
@@ -1444,7 +1569,13 @@ bool ClassDB::has_signal(const StringName &p_class, const StringName &p_signal, 
 
 	return false;
 }
+#endif
 
+#ifdef HOMOT_LINTER
+bool ClassDB::get_signal(const StringName &p_class, const StringName &p_signal, MethodInfo *r_signal) {
+	return LINTER_DB() && LINTER_DB()->get_signal_info(p_class, p_signal, r_signal);
+}
+#else
 bool ClassDB::get_signal(const StringName &p_class, const StringName &p_signal, MethodInfo *r_signal) {
 	Locker::Lock lock(Locker::STATE_READ);
 	ClassInfo *type = classes.getptr(p_class);
@@ -1461,6 +1592,7 @@ bool ClassDB::get_signal(const StringName &p_class, const StringName &p_signal, 
 
 	return false;
 }
+#endif
 
 void ClassDB::add_property_group(const StringName &p_class, const String &p_name, const String &p_prefix, int p_indent_depth) {
 	Locker::Lock lock(Locker::STATE_WRITE);
@@ -1581,6 +1713,13 @@ void ClassDB::add_linked_property(const StringName &p_class, const String &p_pro
 #endif
 }
 
+#ifdef HOMOT_LINTER
+void ClassDB::get_property_list(const StringName &p_class, List<PropertyInfo> *p_list, bool p_no_inheritance, const Object *p_validator) {
+	if (LINTER_DB()) {
+		LINTER_DB()->get_property_list(p_class, p_list, p_no_inheritance);
+	}
+}
+#else
 void ClassDB::get_property_list(const StringName &p_class, List<PropertyInfo> *p_list, bool p_no_inheritance, const Object *p_validator) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1600,6 +1739,7 @@ void ClassDB::get_property_list(const StringName &p_class, List<PropertyInfo> *p
 		check = check->inherits_ptr;
 	}
 }
+#endif
 
 void ClassDB::get_linked_properties_info(const StringName &p_class, const StringName &p_property, List<StringName> *r_properties, bool p_no_inheritance) {
 #ifdef TOOLS_ENABLED
@@ -1620,6 +1760,18 @@ void ClassDB::get_linked_properties_info(const StringName &p_class, const String
 #endif
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::get_property_info(const StringName &p_class, const StringName &p_property, PropertyInfo *r_info, bool p_no_inheritance, const Object *p_validator) {
+	if (!LINTER_DB()) {
+		return false;
+	}
+	const linter::PropertyData *pd = LINTER_DB()->get_property_data(p_class, p_property);
+	if (pd && r_info) {
+		*r_info = pd->info;
+	}
+	return pd != nullptr;
+}
+#else
 bool ClassDB::get_property_info(const StringName &p_class, const StringName &p_property, PropertyInfo *r_info, bool p_no_inheritance, const Object *p_validator) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -1643,6 +1795,7 @@ bool ClassDB::get_property_info(const StringName &p_class, const StringName &p_p
 
 	return false;
 }
+#endif
 
 bool ClassDB::set_property(Object *p_object, const StringName &p_property, const Variant &p_value, bool *r_valid) {
 	ERR_FAIL_NULL_V(p_object, false);
@@ -1796,6 +1949,27 @@ Variant::Type ClassDB::get_property_type(const StringName &p_class, const String
 	return Variant::NIL;
 }
 
+#ifdef HOMOT_LINTER
+StringName ClassDB::get_property_setter(const StringName &p_class, const StringName &p_property) {
+	if (!LINTER_DB()) {
+		return StringName();
+	}
+	const linter::PropertyData *pd = LINTER_DB()->get_property_data(p_class, p_property);
+	return pd ? pd->setter : StringName();
+}
+
+StringName ClassDB::get_property_getter(const StringName &p_class, const StringName &p_property) {
+	if (!LINTER_DB()) {
+		return StringName();
+	}
+	const linter::PropertyData *pd = LINTER_DB()->get_property_data(p_class, p_property);
+	return pd ? pd->getter : StringName();
+}
+
+bool ClassDB::has_property(const StringName &p_class, const StringName &p_property, bool p_no_inheritance) {
+	return LINTER_DB() && LINTER_DB()->has_property(p_class, p_property, p_no_inheritance);
+}
+#else
 StringName ClassDB::get_property_setter(const StringName &p_class, const StringName &p_property) {
 	ClassInfo *type = classes.getptr(p_class);
 	ClassInfo *check = type;
@@ -1842,6 +2016,7 @@ bool ClassDB::has_property(const StringName &p_class, const StringName &p_proper
 
 	return false;
 }
+#endif
 
 void ClassDB::set_method_flags(const StringName &p_class, const StringName &p_method, int p_flags) {
 	Locker::Lock lock(Locker::STATE_WRITE);
@@ -1852,6 +2027,11 @@ void ClassDB::set_method_flags(const StringName &p_class, const StringName &p_me
 	check->method_map[p_method]->set_hint_flags(p_flags);
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::has_method(const StringName &p_class, const StringName &p_method, bool p_no_inheritance) {
+	return LINTER_DB() && LINTER_DB()->has_method(p_class, p_method, p_no_inheritance);
+}
+#else
 bool ClassDB::has_method(const StringName &p_class, const StringName &p_method, bool p_no_inheritance) {
 	ClassInfo *type = classes.getptr(p_class);
 	ClassInfo *check = type;
@@ -1867,6 +2047,7 @@ bool ClassDB::has_method(const StringName &p_class, const StringName &p_method, 
 
 	return false;
 }
+#endif
 
 int ClassDB::get_method_argument_count(const StringName &p_class, const StringName &p_method, bool *r_is_valid, bool p_no_inheritance) {
 	Locker::Lock lock(Locker::STATE_READ);
@@ -2170,6 +2351,11 @@ bool ClassDB::is_class_enabled(const StringName &p_class) {
 	return !ti->disabled;
 }
 
+#ifdef HOMOT_LINTER
+bool ClassDB::is_class_exposed(const StringName &p_class) {
+	return LINTER_DB() && LINTER_DB()->class_exists(p_class);
+}
+#else
 bool ClassDB::is_class_exposed(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);
 
@@ -2177,6 +2363,7 @@ bool ClassDB::is_class_exposed(const StringName &p_class) {
 	ERR_FAIL_NULL_V_MSG(ti, false, vformat("Cannot get class '%s'.", String(p_class)));
 	return ti->exposed;
 }
+#endif
 
 bool ClassDB::is_class_reloadable(const StringName &p_class) {
 	Locker::Lock lock(Locker::STATE_READ);

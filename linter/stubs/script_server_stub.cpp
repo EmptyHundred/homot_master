@@ -1,21 +1,14 @@
 /**************************************************************************/
 /*  script_server_stub.cpp                                                */
 /**************************************************************************/
-/*  Stub for ScriptServer global class queries.                           */
-/*  This file is compiled INSTEAD OF the real ScriptServer                */
-/*  implementation when building the linter target.                       */
-/*                                                                        */
-/*  The analyzer calls:                                                   */
-/*    - ScriptServer::is_global_class(name)                               */
-/*    - ScriptServer::get_global_class_path(name)                         */
-/*    - ScriptServer::get_global_class_native_base(name)                  */
+/*  ScriptServerStub registry for the standalone linter.                  */
+/*  ScriptServer method overrides are now in                              */
+/*  core/object/script_language.cpp behind #ifdef HOMOT_LINTER guards.   */
 /**************************************************************************/
 
 #ifdef HOMOT
 
 #include "script_server_stub.h"
-
-#include "core/object/script_language.h"
 
 namespace linter {
 
@@ -47,27 +40,5 @@ StringName ScriptServerStub::get_global_class_native_base(const StringName &p_cl
 }
 
 } // namespace linter
-
-// --- ScriptServer static method stubs ---
-
-bool ScriptServer::is_global_class(const StringName &p_class) {
-	return linter::ScriptServerStub::is_global_class(p_class);
-}
-
-String ScriptServer::get_global_class_path(const String &p_class) {
-	return linter::ScriptServerStub::get_global_class_path(StringName(p_class));
-}
-
-StringName ScriptServer::get_global_class_native_base(const String &p_class) {
-	return linter::ScriptServerStub::get_global_class_native_base(StringName(p_class));
-}
-
-bool ScriptServer::is_global_class_abstract(const String &p_class) {
-	return false;
-}
-
-bool ScriptServer::is_global_class_tool(const String &p_class) {
-	return false;
-}
 
 #endif // HOMOT

@@ -43,7 +43,9 @@
 #include "core/variant/typed_array.h"
 #include "core/variant/variant_parser.h"
 #include "core/version.h"
+#ifndef HOMOT_LINTER
 #include "servers/rendering/rendering_server.h"
+#endif
 
 #ifdef TOOLS_ENABLED
 #include "modules/modules_enabled.gen.h" // For mono.
@@ -635,7 +637,9 @@ void ProjectSettings::_convert_to_last_version(int p_from_version) {
 	} else if (p_from_version <= 6) {
 		// Check if we still have legacy boot splash (removed in 4.6), map it to new project setting, then remove legacy setting.
 		if (has_setting("application/boot_splash/fullsize")) {
-			set_setting("application/boot_splash/stretch_mode", RenderingServer::map_scaling_option_to_stretch_mode(get_setting("application/boot_splash/fullsize")));
+	#ifndef HOMOT_LINTER
+		set_setting("application/boot_splash/stretch_mode", RenderingServer::map_scaling_option_to_stretch_mode(get_setting("application/boot_splash/fullsize")));
+#endif
 			set_setting("application/boot_splash/fullsize", Variant());
 		}
 	}
@@ -1497,6 +1501,15 @@ void ProjectSettings::remove_autoload(const StringName &p_autoload) {
 	autoloads.erase(p_autoload);
 }
 
+#ifdef HOMOT_LINTER
+bool ProjectSettings::has_autoload(const StringName &p_autoload) const {
+	return false;
+}
+
+ProjectSettings::AutoloadInfo ProjectSettings::get_autoload(const StringName &p_name) const {
+	return AutoloadInfo();
+}
+#else
 bool ProjectSettings::has_autoload(const StringName &p_autoload) const {
 	return autoloads.has(p_autoload);
 }
@@ -1505,6 +1518,7 @@ ProjectSettings::AutoloadInfo ProjectSettings::get_autoload(const StringName &p_
 	ERR_FAIL_COND_V_MSG(!autoloads.has(p_name), AutoloadInfo(), "Trying to get non-existent autoload.");
 	return autoloads[p_name];
 }
+#endif
 
 void ProjectSettings::fix_autoload_paths() {
 	for (KeyValue<StringName, AutoloadInfo> &kv : autoloads) {

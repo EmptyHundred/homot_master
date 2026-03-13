@@ -2,32 +2,27 @@
 """
 SCsub for the standalone GDScript linter.
 Produces a separate homot-linter binary that links only the minimum set
-of engine libraries, using stubs for ClassDB/Engine/ProjectSettings/
-ResourceLoader/ScriptServer.
+of engine libraries. Stub behavior is compiled into the engine source files
+via #ifdef HOMOT_LINTER guards, so no /FORCE:MULTIPLE is needed and the
+linker can strip unreferenced code (/OPT:REF).
 
 To enable, add to root SConstruct after the platform SCsub line:
     if env.get("linter", False):
         SConscript("linter/SCsub")
 
-Build with (alongside an editor build — reuses editor libs, ~145MB):
-    scons platform=windows target=editor linter=yes
-
-For minimal binary size (~40-60MB, requires separate lib build):
+Build with:
     scons platform=windows target=template_debug linter=yes
 """
 from misc.utility.scons_hints import *
 
 Import("env")
 
+import os
+
 env_linter = env.Clone()
 
-# The linter stubs redefine symbols already present in core.lib.
-# On MSVC: /FORCE:MULTIPLE allows multiple definitions (stub wins as first-seen).
-# On MinGW/GCC: --allow-multiple-definition achieves the same.
-if env_linter.msvc:
-    env_linter.Append(LINKFLAGS=["/FORCE:MULTIPLE"])
-else:
-    env_linter.Append(LINKFLAGS=["-Wl,--allow-multiple-definition"])
+# Define HOMOT_LINTER so the engine source files compile with stub logic.
+env_linter.Append(CPPDEFINES=["HOMOT_LINTER"])
 
 # Remove the custom entry point set by the platform build — the linter has
 # its own standard main().
@@ -45,12 +40,11 @@ if env_linter.msvc:
         for f in linkflags
     ]
 
-# --- Aggressive linker optimization ---
-# /OPT:REF  — remove unreferenced functions/data (may be inhibited by /FORCE)
-# /OPT:ICF  — fold identical functions (engine uses /OPT:NOICF for speed_trace)
+# --- Linker optimization ---
+# /OPT:REF  — remove unreferenced functions/data (works now without /FORCE)
+# /OPT:ICF  — fold identical functions
 # /DEBUG:NONE — strip all debug info from the linter binary
 if env_linter.msvc:
-    # Remove conflicting flags first.
     env_linter["LINKFLAGS"] = [
         f for f in env_linter["LINKFLAGS"]
         if str(f) not in ("/OPT:NOICF", "/OPT:NOREF", "/DEBUG:FULL")
@@ -60,11 +54,8 @@ else:
     env_linter.Append(LINKFLAGS=["-Wl,--gc-sections", "-s"])
 
 # --- Optimize for size ---
-# Override optimization flags for the linter binary regardless of the
-# engine's build configuration.
 if env_linter.msvc:
     ccflags = env_linter["CCFLAGS"]
-    # Replace /O2 (speed) with /Os (size), remove /Ob2 (aggressive inlining).
     env_linter["CCFLAGS"] = [
         "/Os" if (str(f) in ("/O2", "/Ox")) else f
         for f in ccflags
@@ -77,18 +68,11 @@ else:
         for f in ccflags
     ]
 
-# --- Minimal LIBS: only core + drivers + servers + gdscript + holymolly ---
-# Drop scene, editor, and unrelated modules to keep the binary small.
-# Required:
-#   core           — Variant, String, Object, FileAccess, etc.
-#   drivers        — FileAccess/DirAccess platform implementations
-#   servers        — TextServerDummy (needed by the GDScript tokenizer)
-#   module_gdscript — GDScriptParser, GDScriptAnalyzer, GDScriptCache
-#   module_holymolly — HOMOT language extensions
+# --- Minimal LIBS: only core + gdscript + holymolly ---
+# servers and drivers are NOT linked as monolithic libs — only the few
+# needed source files are compiled directly (see below).
 keep_names = {
     "core",
-    "drivers",
-    "servers",
     "module_gdscript",
     "module_holymolly",
 }
@@ -96,21 +80,17 @@ keep_names = {
 old_libs = env_linter["LIBS"]
 new_libs = []
 for lib in old_libs:
-    # LIBS entries can be SCons File nodes (lists) or plain strings.
-    # Flatten to get the actual path string.
     if isinstance(lib, list):
         s = str(lib[0]) if lib else ""
     else:
         s = str(lib)
 
-    # Keep engine libs that match our allowlist.
     is_engine_lib = ".windows." in s and s.endswith(".lib")
     if is_engine_lib:
         keep = any(name + "." in s.replace("\\", "/").split("/")[-1] for name in keep_names)
         if keep:
             new_libs.append(lib)
     else:
-        # System/third-party libs — keep all of them.
         new_libs.append(lib)
 
 env_linter["LIBS"] = new_libs
@@ -122,7 +102,29 @@ env_linter.add_source_files(linter_sources, "main_linter.cpp")
 env_linter.add_source_files(linter_sources, "linter_run.cpp")
 env_linter.add_source_files(linter_sources, "stubs/*.cpp")
 
+# Recompile engine source files that contain #ifdef HOMOT_LINTER stubs.
+# These .obj files replace the corresponding members in the engine .lib,
+# so the linker uses our stub versions without needing /FORCE:MULTIPLE.
+# We compile them with explicit output paths under linter/override/ to
+# avoid conflicting with the engine's own .obj files.
+engine_override_sources = [
+    "core/object/class_db.cpp",
+    "core/config/engine.cpp",
+    "core/config/project_settings.cpp",
+    "core/io/resource_loader.cpp",
+    "core/object/script_language.cpp",
+    "core/register_core_types.cpp",
+    # Only the TextServer files needed (TextServerDummy is header-only):
+    "servers/text/text_server.cpp",
+    "servers/text/text_server_extension.cpp",
+    # Only the platform file/dir access implementations:
+    "drivers/windows/file_access_windows.cpp",
+    "drivers/windows/dir_access_windows.cpp",
+]
+for src in engine_override_sources:
+    obj_base = os.path.splitext(os.path.basename(src))[0]
+    target = "override/" + obj_base
+    linter_sources.append(env_linter.Object(target, "#" + src))
+
 # Build as a separate program.
-# The linter_sources (stub .obj files) are listed first so their symbols
-# take precedence over the same symbols in the engine static libraries.
-prog = env_linter.add_program("#bin/homot-linter", linter_sources)
+prog = env_linter.add_program("#bin/linter/homot-linter", linter_sources)

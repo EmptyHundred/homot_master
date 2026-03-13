@@ -36,7 +36,13 @@
 #include "core/license.gen.h"
 #include "core/variant/typed_array.h"
 #include "core/version.h"
+#ifndef HOMOT_LINTER
 #include "servers/rendering/rendering_device.h"
+#endif
+
+#ifdef HOMOT_LINTER
+#include "linter/stubs/linterdb.h"
+#endif
 
 void Engine::_update_time_scale() {
 	_time_scale = _user_time_scale * _game_time_scale;
@@ -86,10 +92,12 @@ double Engine::get_physics_jitter_fix() const {
 void Engine::set_max_fps(int p_fps) {
 	_max_fps = p_fps > 0 ? p_fps : 0;
 
+#ifndef HOMOT_LINTER
 	RenderingDevice *rd = RenderingDevice::get_singleton();
 	if (rd) {
 		rd->_set_max_fps(_max_fps);
 	}
+#endif
 }
 
 int Engine::get_max_fps() const {
@@ -378,9 +386,16 @@ void Engine::remove_singleton(const StringName &p_name) {
 	}
 }
 
+#ifdef HOMOT_LINTER
+bool Engine::has_singleton(const StringName &p_name) const {
+	linter::LinterDB *db = linter::LinterDB::get_singleton();
+	return db && db->has_singleton(p_name);
+}
+#else
 bool Engine::has_singleton(const StringName &p_name) const {
 	return singleton_ptrs.has(p_name);
 }
+#endif
 
 void Engine::get_singletons(List<Singleton> *p_singletons) {
 	for (const Singleton &E : singletons) {

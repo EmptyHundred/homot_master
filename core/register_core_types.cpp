@@ -124,6 +124,128 @@ static ResourceUID *resource_uid = nullptr;
 
 static bool _is_core_extensions_registered = false;
 
+#ifdef HOMOT_LINTER
+// ---- Minimal linter versions of registration functions ----
+// Only sets up the type system (StringName, Variant, Object, Resource, Script)
+// and file I/O. Skips networking, crypto, input, image, extensions, etc.
+
+void register_core_types() {
+	ObjectDB::setup();
+	StringName::setup();
+	register_global_constants();
+	CoreStringNames::create();
+
+	GDREGISTER_CLASS(Object);
+	GDREGISTER_CLASS(RefCounted);
+	GDREGISTER_CLASS(WeakRef);
+	GDREGISTER_CLASS(Resource);
+
+	GDREGISTER_CLASS(Time);
+	_time = memnew(Time);
+	ResourceLoader::initialize();
+
+	Variant::register_types();
+
+	GDREGISTER_CLASS(ResourceFormatLoader);
+	GDREGISTER_CLASS(ResourceFormatSaver);
+
+	GDREGISTER_ABSTRACT_CLASS(Script);
+	GDREGISTER_ABSTRACT_CLASS(ScriptLanguage);
+	GDREGISTER_CLASS(ScriptBacktrace);
+	GDREGISTER_VIRTUAL_CLASS(ScriptExtension);
+	GDREGISTER_VIRTUAL_CLASS(ScriptLanguageExtension);
+
+	GDREGISTER_CLASS(MissingResource);
+
+	GDREGISTER_ABSTRACT_CLASS(FileAccess);
+	GDREGISTER_ABSTRACT_CLASS(DirAccess);
+
+	GDREGISTER_CLASS(JSON);
+
+	GDREGISTER_CLASS(MainLoop);
+	GDREGISTER_CLASS(Expression);
+	GDREGISTER_CLASS(ProjectSettings);
+
+	GDREGISTER_ABSTRACT_CLASS(WorkerThreadPool);
+	worker_thread_pool = memnew(WorkerThreadPool);
+
+	GDREGISTER_CLASS(CoreBind::ResourceLoader);
+	GDREGISTER_CLASS(CoreBind::ResourceSaver);
+	GDREGISTER_CLASS(CoreBind::OS);
+	GDREGISTER_CLASS(CoreBind::Engine);
+	GDREGISTER_CLASS(CoreBind::Special::ClassDB);
+	GDREGISTER_CLASS(CoreBind::Marshalls);
+	GDREGISTER_CLASS(CoreBind::EngineDebugger);
+
+	_resource_loader = memnew(CoreBind::ResourceLoader);
+	_resource_saver = memnew(CoreBind::ResourceSaver);
+	_os = memnew(CoreBind::OS);
+	_engine = memnew(CoreBind::Engine);
+	_classdb = memnew(CoreBind::Special::ClassDB);
+	_marshalls = memnew(CoreBind::Marshalls);
+	_engine_debugger = memnew(CoreBind::EngineDebugger);
+
+	_geometry_2d = memnew(CoreBind::Geometry2D);
+	_geometry_3d = memnew(CoreBind::Geometry3D);
+
+	GDREGISTER_ABSTRACT_CLASS(GDExtensionManager);
+	gdextension_manager = memnew(GDExtensionManager);
+
+	GDREGISTER_ABSTRACT_CLASS(ResourceUID);
+	resource_uid = memnew(ResourceUID);
+}
+
+void register_core_settings() {
+}
+
+void register_early_core_singletons() {
+	Engine::get_singleton()->add_singleton(Engine::Singleton("Engine", CoreBind::Engine::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("ProjectSettings", ProjectSettings::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("OS", CoreBind::OS::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("Time", Time::get_singleton()));
+}
+
+void register_core_singletons() {
+	Engine::get_singleton()->add_singleton(Engine::Singleton("ResourceLoader", CoreBind::ResourceLoader::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("ResourceSaver", CoreBind::ResourceSaver::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("ClassDB", _classdb));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("Marshalls", CoreBind::Marshalls::get_singleton()));
+	Engine::get_singleton()->add_singleton(Engine::Singleton("TranslationServer", TranslationServer::get_singleton()));
+}
+
+void register_core_extensions() {
+}
+
+void unregister_core_extensions() {
+}
+
+void unregister_core_types() {
+	memdelete(worker_thread_pool);
+	memdelete(_engine_debugger);
+	memdelete(_marshalls);
+	memdelete(_classdb);
+	memdelete(_engine);
+	memdelete(_os);
+	memdelete(_resource_saver);
+	memdelete(_resource_loader);
+	memdelete(_geometry_3d);
+	memdelete(_geometry_2d);
+	memdelete(gdextension_manager);
+	memdelete(resource_uid);
+	ResourceLoader::finalize();
+	ClassDB::cleanup_defaults();
+	memdelete(_time);
+	ObjectDB::cleanup();
+	Variant::unregister_types();
+	unregister_global_constants();
+	ResourceCache::clear();
+	ClassDB::cleanup();
+	CoreStringNames::free();
+	StringName::cleanup();
+}
+
+#else // !HOMOT_LINTER
+
 void register_core_types() {
 	OS::get_singleton()->benchmark_begin_measure("Core", "Register Types");
 
@@ -493,3 +615,5 @@ void unregister_core_types() {
 
 	OS::get_singleton()->benchmark_end_measure("Core", "Unregister Types");
 }
+
+#endif // !HOMOT_LINTER

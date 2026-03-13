@@ -37,6 +37,10 @@
 #include "core/io/resource_loader.h"
 #include "core/templates/sort_array.h"
 
+#ifdef HOMOT_LINTER
+#include "linter/stubs/script_server_stub.h"
+#endif
+
 ScriptLanguage *ScriptServer::_languages[MAX_LANGUAGES];
 int ScriptServer::_language_count = 0;
 bool ScriptServer::languages_ready = false;
@@ -479,6 +483,35 @@ void ScriptServer::remove_global_class_by_path(const String &p_path) {
 	}
 }
 
+#ifdef HOMOT_LINTER
+bool ScriptServer::is_global_class(const StringName &p_class) {
+	return linter::ScriptServerStub::is_global_class(p_class);
+}
+
+StringName ScriptServer::get_global_class_language(const StringName &p_class) {
+	return StringName();
+}
+
+String ScriptServer::get_global_class_path(const String &p_class) {
+	return linter::ScriptServerStub::get_global_class_path(StringName(p_class));
+}
+
+StringName ScriptServer::get_global_class_base(const String &p_class) {
+	return StringName();
+}
+
+StringName ScriptServer::get_global_class_native_base(const String &p_class) {
+	return linter::ScriptServerStub::get_global_class_native_base(StringName(p_class));
+}
+
+bool ScriptServer::is_global_class_abstract(const String &p_class) {
+	return false;
+}
+
+bool ScriptServer::is_global_class_tool(const String &p_class) {
+	return false;
+}
+#else
 bool ScriptServer::is_global_class(const StringName &p_class) {
 	return global_classes.has(p_class);
 }
@@ -516,6 +549,7 @@ bool ScriptServer::is_global_class_tool(const String &p_class) {
 	ERR_FAIL_COND_V(!global_classes.has(p_class), false);
 	return global_classes[p_class].is_tool;
 }
+#endif
 
 // This function only sorts items added by this function.
 // If `r_global_classes` is not empty before calling and a global sort is needed, caller must handle that separately.
