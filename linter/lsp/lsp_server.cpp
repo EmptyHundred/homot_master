@@ -976,6 +976,63 @@ Dictionary Server::handle_completion(const Variant &p_id, const Dictionary &p_pa
 // Go-to-definition — AST node finder
 // ---------------------------------------------------------------------------
 
+// Extract the identifier word at the given 0-based LSP position.
+static String _get_word_at_position(const String &p_source, int p_lsp_line, int p_lsp_character) {
+	// Find start of the target line.
+	int pos = 0;
+	for (int i = 0; i < p_lsp_line && pos < p_source.length(); i++) {
+		while (pos < p_source.length() && p_source[pos] != '\n') {
+			pos++;
+		}
+		if (pos < p_source.length()) {
+			pos++; // skip '\n'
+		}
+	}
+
+	int line_start = pos;
+
+	// Find end of line.
+	int line_end = line_start;
+	while (line_end < p_source.length() && p_source[line_end] != '\n') {
+		line_end++;
+	}
+
+	int cursor = line_start + p_lsp_character;
+	if (cursor < line_start || cursor >= line_end) {
+		return String();
+	}
+
+	// Check if cursor is on an identifier character.
+	char32_t c = p_source[cursor];
+	if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (c >= '0' && c <= '9'))) {
+		return String();
+	}
+
+	// Expand left.
+	int start = cursor;
+	while (start > line_start) {
+		char32_t ch = p_source[start - 1];
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || (ch >= '0' && ch <= '9')) {
+			start--;
+		} else {
+			break;
+		}
+	}
+
+	// Expand right.
+	int end = cursor;
+	while (end < line_end) {
+		char32_t ch = p_source[end];
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || (ch >= '0' && ch <= '9')) {
+			end++;
+		} else {
+			break;
+		}
+	}
+
+	return p_source.substr(start, end - start);
+}
+
 // Convert a 0-based LSP character offset to the 1-based tab-expanded column
 // that the GDScript tokenizer uses. The tokenizer expands each tab to tab_size
 // columns (default 4), so a single tab character shifts all subsequent columns.
@@ -1330,10 +1387,81 @@ static bool _resolve_identifier_location(
 	if (p_class_to_path.has(name_str)) {
 		r_path = p_class_to_path[name_str];
 		r_line = 1;
-		r_col = 0;
+		r_col = 1;
 		return true;
 	}
 
+	return false;
+}
+
+// Fallback: search the class AST for a member matching the identifier name.
+// Used when the analyzer didn't populate the source pointers on the identifier.
+static bool _find_member_definition_in_class(
+		const GDScriptParser::ClassNode *p_class,
+		const StringName &p_name,
+		const String &p_current_path,
+		String &r_path, int &r_line, int &r_col) {
+	if (!p_class) return false;
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const GDScriptParser::ClassNode::Member &member = p_class->members[i];
+		switch (member.type) {
+			case GDScriptParser::ClassNode::Member::FUNCTION: {
+				if (member.function->identifier && member.function->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.function->start_line;
+					r_col = member.function->start_column;
+					return true;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::VARIABLE: {
+				if (member.variable->identifier && member.variable->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.variable->start_line;
+					r_col = member.variable->start_column;
+					return true;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::CONSTANT: {
+				if (member.constant->identifier && member.constant->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.constant->start_line;
+					r_col = member.constant->start_column;
+					return true;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::SIGNAL: {
+				if (member.signal->identifier && member.signal->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.signal->start_line;
+					r_col = member.signal->start_column;
+					return true;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::ENUM: {
+				if (member.m_enum->identifier && member.m_enum->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.m_enum->start_line;
+					r_col = member.m_enum->start_column;
+					return true;
+				}
+			} break;
+			case GDScriptParser::ClassNode::Member::CLASS: {
+				if (member.m_class->identifier && member.m_class->identifier->name == p_name) {
+					r_path = p_current_path;
+					r_line = member.m_class->start_line;
+					r_col = member.m_class->start_column;
+					return true;
+				}
+				// Also recurse into inner classes.
+				if (_find_member_definition_in_class(member.m_class, p_name, p_current_path, r_path, r_line, r_col)) {
+					return true;
+				}
+			} break;
+			default:
+				break;
+		}
+	}
 	return false;
 }
 
@@ -1369,16 +1497,31 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 	int parser_col = _lsp_to_parser_column(source, line, character);
 
 	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), parser_line, parser_col);
-	if (!ident) {
-		return make_response(p_id, Variant());
-	}
 
-	// Resolve location.
 	String def_path;
 	int def_line = 0;
 	int def_col = 0;
-	if (!_resolve_identifier_location(ident, file_path, class_to_path, def_path, def_line, def_col)) {
-		return make_response(p_id, Variant());
+
+	if (ident) {
+		// Try analyzer-resolved location first, then class member search.
+		if (!_resolve_identifier_location(ident, file_path, class_to_path, def_path, def_line, def_col)) {
+			if (!_find_member_definition_in_class(parser.get_tree(), ident->name, file_path, def_path, def_line, def_col)) {
+				ident = nullptr; // Fall through to text-based lookup.
+			}
+		}
+	}
+
+	if (!ident) {
+		// Text-based fallback: extract word at cursor position and check
+		// global class names. Handles extends, type annotations, and other
+		// contexts not covered by the AST walker.
+		String word = _get_word_at_position(source, line, character);
+		if (word.is_empty() || !class_to_path.has(word)) {
+			return make_response(p_id, Variant());
+		}
+		def_path = class_to_path[word];
+		def_line = 1;
+		def_col = 1;
 	}
 
 	// Convert to LSP Location (0-based lines, tab-aware columns).
@@ -1503,11 +1646,20 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 	int parser_col = _lsp_to_parser_column(source, line, character);
 
 	const GDScriptParser::IdentifierNode *ident = _find_identifier_at_position(parser.get_tree(), parser_line, parser_col);
-	if (!ident) {
-		return make_response(p_id, Variant());
+
+	String hover_text;
+	if (ident) {
+		hover_text = _build_hover_text(ident);
 	}
 
-	String hover_text = _build_hover_text(ident);
+	// Text-based fallback for global class names in extends, type annotations, etc.
+	if (hover_text.is_empty()) {
+		String word = _get_word_at_position(source, line, character);
+		if (!word.is_empty() && class_to_path.has(word)) {
+			hover_text = vformat("(global class) %s\n%s", word, class_to_path[word]);
+		}
+	}
+
 	if (hover_text.is_empty()) {
 		return make_response(p_id, Variant());
 	}
@@ -1520,13 +1672,15 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 	Dictionary hover;
 	hover["contents"] = contents;
 
-	// Include the identifier's range (convert parser coords to LSP).
-	Range range;
-	range.start.line = MAX(0, ident->start_line - 1);
-	range.start.character = _parser_column_to_lsp(source, ident->start_line, ident->start_column);
-	range.end.line = MAX(0, ident->end_line - 1);
-	range.end.character = _parser_column_to_lsp(source, ident->end_line, ident->end_column);
-	hover["range"] = range.to_dict();
+	if (ident) {
+		// Include the identifier's range (convert parser coords to LSP).
+		Range range;
+		range.start.line = MAX(0, ident->start_line - 1);
+		range.start.character = _parser_column_to_lsp(source, ident->start_line, ident->start_column);
+		range.end.line = MAX(0, ident->end_line - 1);
+		range.end.character = _parser_column_to_lsp(source, ident->end_line, ident->end_column);
+		hover["range"] = range.to_dict();
+	}
 
 	return make_response(p_id, hover);
 }
