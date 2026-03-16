@@ -61,6 +61,9 @@ class Server {
 	String insert_cursor_sentinel(const String &p_source, int p_line, int p_character);
 	void collect_completions_for_context(const GDScriptParser &p_parser, Array &r_items);
 
+	// --- Signature Help ---
+	Dictionary handle_signature_help(const Variant &p_id, const Dictionary &p_params);
+
 	// --- Go-to-definition ---
 	Dictionary handle_definition(const Variant &p_id, const Dictionary &p_params);
 

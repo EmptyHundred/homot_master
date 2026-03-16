@@ -117,6 +117,54 @@ struct CompletionItem {
 };
 
 // ---------------------------------------------------------------------------
+// Signature Help
+// ---------------------------------------------------------------------------
+
+struct ParameterInformation {
+	String label;
+
+	Dictionary to_dict() const {
+		Dictionary d;
+		d["label"] = label;
+		return d;
+	}
+};
+
+struct SignatureInformation {
+	String label;
+	Vector<ParameterInformation> parameters;
+
+	Dictionary to_dict() const {
+		Dictionary d;
+		d["label"] = label;
+		Array params;
+		for (int i = 0; i < parameters.size(); i++) {
+			params.push_back(parameters[i].to_dict());
+		}
+		d["parameters"] = params;
+		return d;
+	}
+};
+
+struct SignatureHelp {
+	Vector<SignatureInformation> signatures;
+	int active_signature = 0;
+	int active_parameter = 0;
+
+	Dictionary to_dict() const {
+		Dictionary d;
+		Array sigs;
+		for (int i = 0; i < signatures.size(); i++) {
+			sigs.push_back(signatures[i].to_dict());
+		}
+		d["signatures"] = sigs;
+		d["activeSignature"] = active_signature;
+		d["activeParameter"] = active_parameter;
+		return d;
+	}
+};
+
+// ---------------------------------------------------------------------------
 // Location (for go-to-definition)
 // ---------------------------------------------------------------------------
 
@@ -154,6 +202,14 @@ inline Dictionary make_server_capabilities() {
 	trigger_chars.push_back("@");
 	completion["triggerCharacters"] = trigger_chars;
 	caps["completionProvider"] = completion;
+
+	// Signature help.
+	Dictionary sig_help;
+	Array sig_trigger;
+	sig_trigger.push_back("(");
+	sig_trigger.push_back(",");
+	sig_help["triggerCharacters"] = sig_trigger;
+	caps["signatureHelpProvider"] = sig_help;
 
 	// Go-to-definition.
 	caps["definitionProvider"] = true;

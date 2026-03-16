@@ -13,6 +13,7 @@
 
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
+#include "modules/gdscript/gdscript_utility_functions.h"
 #include "modules/gdscript/gdscript_warning.h"
 
 #include "core/io/dir_access.h"
@@ -444,6 +445,32 @@ String Server::insert_cursor_sentinel(const String &p_source, int p_line, int p_
 	return result;
 }
 
+// Build a human-readable signature string from MethodInfo.
+// e.g. "(name: String, index: int) -> bool"
+static String _method_signature(const MethodInfo &p_mi) {
+	String sig = "(";
+	int i = 0;
+	for (const PropertyInfo &arg : p_mi.arguments) {
+		if (i > 0) {
+			sig += ", ";
+		}
+		sig += arg.name;
+		if (arg.type != Variant::NIL) {
+			sig += ": " + Variant::get_type_name(arg.type);
+		} else if (arg.class_name != StringName()) {
+			sig += ": " + String(arg.class_name);
+		}
+		i++;
+	}
+	sig += ")";
+	if (p_mi.return_val.type != Variant::NIL) {
+		sig += " -> " + Variant::get_type_name(p_mi.return_val.type);
+	} else if (p_mi.return_val.class_name != StringName()) {
+		sig += " -> " + String(p_mi.return_val.class_name);
+	}
+	return sig;
+}
+
 // GDScript keywords for identifier completion.
 static const char *_gdscript_keywords[] = {
 	"var", "const", "func", "class", "extends", "class_name", "signal",
@@ -520,10 +547,25 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 							item.label = member.constant->identifier->name;
 							item.kind = COMPLETION_KIND_CONSTANT;
 							break;
-						case GDScriptParser::ClassNode::Member::FUNCTION:
+						case GDScriptParser::ClassNode::Member::FUNCTION: {
 							item.label = member.function->identifier->name;
 							item.kind = COMPLETION_KIND_FUNCTION;
-							break;
+							String sig = "(";
+							for (int j = 0; j < member.function->parameters.size(); j++) {
+								if (j > 0) sig += ", ";
+								sig += member.function->parameters[j]->identifier->name;
+								GDScriptParser::DataType pt = member.function->parameters[j]->get_datatype();
+								if (pt.is_set() && !pt.is_variant()) {
+									sig += ": " + pt.to_string();
+								}
+							}
+							sig += ")";
+							GDScriptParser::DataType rt = member.function->get_datatype();
+							if (rt.is_set() && !rt.is_variant()) {
+								sig += " -> " + rt.to_string();
+							}
+							item.detail = sig;
+						} break;
 						case GDScriptParser::ClassNode::Member::SIGNAL:
 							if (methods_only) continue;
 							item.label = member.signal->identifier->name;
@@ -568,6 +610,7 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 							CompletionItem item;
 							item.label = mi.name;
 							item.kind = COMPLETION_KIND_METHOD;
+							item.detail = _method_signature(mi);
 							r_items.push_back(item.to_dict());
 						}
 					}
@@ -653,6 +696,8 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 					CompletionItem item;
 					item.label = fn;
 					item.kind = COMPLETION_KIND_FUNCTION;
+					MethodInfo mi = Variant::get_utility_function_info(fn);
+					item.detail = _method_signature(mi);
 					r_items.push_back(item.to_dict());
 				}
 			}
@@ -688,54 +733,108 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 				if (db) {
 					StringName native_class = base_dt.native_type;
 
-					// Methods (walks inheritance).
-					{
-						List<MethodInfo> methods;
-						db->get_method_list(native_class, &methods);
-						for (const MethodInfo &mi : methods) {
-							if (mi.name.begins_with("_")) continue;
+					if (base_dt.is_meta_type) {
+						// Meta-type access (e.g. Node.) — offer new() and static methods/constants.
+						{
 							CompletionItem item;
-							item.label = mi.name;
+							item.label = "new";
 							item.kind = COMPLETION_KIND_METHOD;
 							r_items.push_back(item.to_dict());
 						}
-					}
 
-					if (!methods_only) {
-						// Properties.
+						// Static methods only.
 						{
-							List<PropertyInfo> props;
-							db->get_property_list(native_class, &props);
-							for (const PropertyInfo &pi : props) {
-								if (pi.name.begins_with("_")) continue;
+							List<MethodInfo> methods;
+							db->get_method_list(native_class, &methods);
+							for (const MethodInfo &mi : methods) {
+								if (mi.name.begins_with("_")) continue;
+								if (!(mi.flags & METHOD_FLAG_STATIC)) continue;
 								CompletionItem item;
-								item.label = pi.name;
-								item.kind = COMPLETION_KIND_PROPERTY;
+								item.label = mi.name;
+								item.kind = COMPLETION_KIND_METHOD;
+								item.detail = _method_signature(mi);
 								r_items.push_back(item.to_dict());
 							}
 						}
 
-						// Signals.
+						if (!methods_only) {
+							// Enums and constants.
+							{
+								List<String> constants;
+								db->get_integer_constant_list(native_class, &constants);
+								for (const String &c : constants) {
+									CompletionItem item;
+									item.label = c;
+									item.kind = COMPLETION_KIND_CONSTANT;
+									r_items.push_back(item.to_dict());
+								}
+							}
+
+							// Enum names.
+							{
+								List<StringName> enums;
+								db->get_enum_list(native_class, &enums);
+								for (const StringName &e : enums) {
+									CompletionItem item;
+									item.label = e;
+									item.kind = COMPLETION_KIND_ENUM;
+									r_items.push_back(item.to_dict());
+								}
+							}
+						}
+					} else {
+						// Instance access (e.g. my_node.) — offer instance methods/properties/signals.
+
+						// Methods (walks inheritance).
 						{
-							List<MethodInfo> signals;
-							db->get_signal_list(native_class, &signals);
-							for (const MethodInfo &si : signals) {
+							List<MethodInfo> methods;
+							db->get_method_list(native_class, &methods);
+							for (const MethodInfo &mi : methods) {
+								if (mi.name.begins_with("_")) continue;
 								CompletionItem item;
-								item.label = si.name;
-								item.kind = COMPLETION_KIND_EVENT;
+								item.label = mi.name;
+								item.kind = COMPLETION_KIND_METHOD;
+								item.detail = _method_signature(mi);
 								r_items.push_back(item.to_dict());
 							}
 						}
 
-						// Enums and constants.
-						{
-							List<String> constants;
-							db->get_integer_constant_list(native_class, &constants);
-							for (const String &c : constants) {
-								CompletionItem item;
-								item.label = c;
-								item.kind = COMPLETION_KIND_CONSTANT;
-								r_items.push_back(item.to_dict());
+						if (!methods_only) {
+							// Properties.
+							{
+								List<PropertyInfo> props;
+								db->get_property_list(native_class, &props);
+								for (const PropertyInfo &pi : props) {
+									if (pi.name.begins_with("_")) continue;
+									CompletionItem item;
+									item.label = pi.name;
+									item.kind = COMPLETION_KIND_PROPERTY;
+									r_items.push_back(item.to_dict());
+								}
+							}
+
+							// Signals.
+							{
+								List<MethodInfo> signals;
+								db->get_signal_list(native_class, &signals);
+								for (const MethodInfo &si : signals) {
+									CompletionItem item;
+									item.label = si.name;
+									item.kind = COMPLETION_KIND_EVENT;
+									r_items.push_back(item.to_dict());
+								}
+							}
+
+							// Enums and constants.
+							{
+								List<String> constants;
+								db->get_integer_constant_list(native_class, &constants);
+								for (const String &c : constants) {
+									CompletionItem item;
+									item.label = c;
+									item.kind = COMPLETION_KIND_CONSTANT;
+									r_items.push_back(item.to_dict());
+								}
 							}
 						}
 					}
@@ -752,6 +851,8 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 						CompletionItem item;
 						item.label = m;
 						item.kind = COMPLETION_KIND_METHOD;
+						MethodInfo mi = Variant::get_builtin_method_info(vt, m);
+						item.detail = _method_signature(mi);
 						r_items.push_back(item.to_dict());
 					}
 				}
@@ -783,6 +884,12 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 				}
 			} else if (base_dt.kind == GDScriptParser::DataType::CLASS && base_dt.class_type) {
 				// Script class — walk AST members.
+				if (base_dt.is_meta_type) {
+					CompletionItem new_item;
+					new_item.label = "new";
+					new_item.kind = COMPLETION_KIND_METHOD;
+					r_items.push_back(new_item.to_dict());
+				}
 				const GDScriptParser::ClassNode *cls = base_dt.class_type;
 				for (int i = 0; i < cls->members.size(); i++) {
 					const GDScriptParser::ClassNode::Member &member = cls->members[i];
@@ -798,10 +905,25 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 							item.label = member.constant->identifier->name;
 							item.kind = COMPLETION_KIND_CONSTANT;
 							break;
-						case GDScriptParser::ClassNode::Member::FUNCTION:
+						case GDScriptParser::ClassNode::Member::FUNCTION: {
 							item.label = member.function->identifier->name;
 							item.kind = COMPLETION_KIND_FUNCTION;
-							break;
+							String sig = "(";
+							for (int j = 0; j < member.function->parameters.size(); j++) {
+								if (j > 0) sig += ", ";
+								sig += member.function->parameters[j]->identifier->name;
+								GDScriptParser::DataType pt = member.function->parameters[j]->get_datatype();
+								if (pt.is_set() && !pt.is_variant()) {
+									sig += ": " + pt.to_string();
+								}
+							}
+							sig += ")";
+							GDScriptParser::DataType rt = member.function->get_datatype();
+							if (rt.is_set() && !rt.is_variant()) {
+								sig += " -> " + rt.to_string();
+							}
+							item.detail = sig;
+						} break;
 						case GDScriptParser::ClassNode::Member::SIGNAL:
 							if (methods_only) continue;
 							item.label = member.signal->identifier->name;
@@ -922,6 +1044,7 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 						CompletionItem item;
 						item.label = mi.name;
 						item.kind = COMPLETION_KIND_METHOD;
+						item.detail = _method_signature(mi);
 						r_items.push_back(item.to_dict());
 					}
 				}
@@ -970,6 +1093,386 @@ Dictionary Server::handle_completion(const Variant &p_id, const Dictionary &p_pa
 	collect_completions_for_context(parser, items);
 
 	return make_response(p_id, items);
+}
+
+// ---------------------------------------------------------------------------
+// Signature Help
+// ---------------------------------------------------------------------------
+
+// Scan backward from cursor to find the function call context.
+// Returns the function name, base expression text (if any), and active parameter index.
+struct _CallContext {
+	String func_name;
+	String base_text; // e.g. "my_node" for "my_node.add_child("
+	int active_param = 0;
+	bool found = false;
+};
+
+static _CallContext _find_call_context(const String &p_source, int p_lsp_line, int p_lsp_character) {
+	_CallContext ctx;
+
+	// Get text up to cursor position.
+	Vector<String> lines = p_source.split("\n");
+	if (p_lsp_line >= lines.size()) {
+		return ctx;
+	}
+
+	// Build flat text up to cursor.
+	String text_before;
+	for (int i = 0; i < p_lsp_line; i++) {
+		text_before += lines[i] + "\n";
+	}
+	text_before += lines[p_lsp_line].substr(0, p_lsp_character);
+
+	// Walk backward to find unmatched '('.
+	int paren_depth = 0;
+	int comma_count = 0;
+	int scan_pos = text_before.length() - 1;
+
+	while (scan_pos >= 0) {
+		char32_t c = text_before[scan_pos];
+		if (c == ')') {
+			paren_depth++;
+		} else if (c == '(') {
+			if (paren_depth > 0) {
+				paren_depth--;
+			} else {
+				// Found the unmatched '(' — everything before it is the callee.
+				break;
+			}
+		} else if (c == ',' && paren_depth == 0) {
+			comma_count++;
+		}
+		scan_pos--;
+	}
+
+	if (scan_pos < 0) {
+		return ctx; // No unmatched '(' found.
+	}
+
+	ctx.active_param = comma_count;
+
+	// Extract the function name (and optional base) before '('.
+	int end = scan_pos; // Position of '('
+	// Skip whitespace before '('.
+	int name_end = end - 1;
+	while (name_end >= 0 && text_before[name_end] == ' ') {
+		name_end--;
+	}
+	if (name_end < 0) {
+		return ctx;
+	}
+
+	// Read identifier backward.
+	int name_start = name_end;
+	while (name_start >= 0) {
+		char32_t c = text_before[name_start];
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			name_start--;
+		} else {
+			break;
+		}
+	}
+	name_start++;
+
+	if (name_start > name_end) {
+		return ctx;
+	}
+
+	ctx.func_name = text_before.substr(name_start, name_end - name_start + 1);
+
+	// Check for dot before function name — indicates method call.
+	int dot_pos = name_start - 1;
+	while (dot_pos >= 0 && text_before[dot_pos] == ' ') {
+		dot_pos--;
+	}
+	if (dot_pos >= 0 && text_before[dot_pos] == '.') {
+		// Read the base identifier.
+		int base_end = dot_pos - 1;
+		while (base_end >= 0 && text_before[base_end] == ' ') {
+			base_end--;
+		}
+		if (base_end >= 0) {
+			int base_start = base_end;
+			while (base_start >= 0) {
+				char32_t c = text_before[base_start];
+				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+					base_start--;
+				} else {
+					break;
+				}
+			}
+			base_start++;
+			if (base_start <= base_end) {
+				ctx.base_text = text_before.substr(base_start, base_end - base_start + 1);
+			}
+		}
+	}
+
+	ctx.found = true;
+	return ctx;
+}
+
+static SignatureInformation _sig_from_method_info(const String &p_name, const MethodInfo &p_mi) {
+	SignatureInformation sig;
+	String label = p_name + "(";
+	int i = 0;
+	for (const PropertyInfo &arg : p_mi.arguments) {
+		if (i > 0) label += ", ";
+		String param_text = arg.name;
+		if (arg.type != Variant::NIL) {
+			param_text += ": " + Variant::get_type_name(arg.type);
+		} else if (arg.class_name != StringName()) {
+			param_text += ": " + String(arg.class_name);
+		}
+		ParameterInformation pi;
+		pi.label = param_text;
+		sig.parameters.push_back(pi);
+		label += param_text;
+		i++;
+	}
+	label += ")";
+	if (p_mi.return_val.type != Variant::NIL) {
+		label += " -> " + Variant::get_type_name(p_mi.return_val.type);
+	} else if (p_mi.return_val.class_name != StringName()) {
+		label += " -> " + String(p_mi.return_val.class_name);
+	}
+	sig.label = label;
+	return sig;
+}
+
+static SignatureInformation _sig_from_function_node(const GDScriptParser::FunctionNode *p_func) {
+	SignatureInformation sig;
+	String label = String(p_func->identifier->name) + "(";
+	for (int i = 0; i < p_func->parameters.size(); i++) {
+		if (i > 0) label += ", ";
+		const GDScriptParser::ParameterNode *param = p_func->parameters[i];
+		String param_text = param->identifier->name;
+		GDScriptParser::DataType pt = param->get_datatype();
+		if (pt.is_set() && !pt.is_variant()) {
+			param_text += ": " + pt.to_string();
+		}
+		ParameterInformation pi;
+		pi.label = param_text;
+		sig.parameters.push_back(pi);
+		label += param_text;
+	}
+	label += ")";
+	GDScriptParser::DataType rt = p_func->get_datatype();
+	if (rt.is_set() && !rt.is_variant()) {
+		label += " -> " + rt.to_string();
+	}
+	sig.label = label;
+	return sig;
+}
+
+Dictionary Server::handle_signature_help(const Variant &p_id, const Dictionary &p_params) {
+	Dictionary td = p_params["textDocument"];
+	String uri = td["uri"];
+	Dictionary pos_dict = p_params["position"];
+	int line = pos_dict["line"];
+	int character = pos_dict["character"];
+
+	String source;
+	if (documents.has(uri)) {
+		source = documents[uri].content;
+	} else {
+		source = FileAccess::get_file_as_string(uri_to_path(uri));
+	}
+
+	if (source.is_empty()) {
+		return make_response(p_id, Variant());
+	}
+
+	_CallContext call_ctx = _find_call_context(source, line, character);
+	if (!call_ctx.found || call_ctx.func_name.is_empty()) {
+		return make_response(p_id, Variant());
+	}
+
+	LinterDB *db = LinterDB::get_singleton();
+	SignatureHelp help;
+	bool found_sig = false;
+
+	if (!call_ctx.base_text.is_empty()) {
+		// Method call: base.func(
+		// We need to resolve the base type. Parse the file to get type info.
+		String file_path = uri_to_path(uri);
+		GDScriptParser parser;
+		GDScriptAnalyzer analyzer(&parser);
+		parser.parse(source, file_path, false);
+		analyzer.analyze();
+
+		// Try to find the base identifier in the AST and get its type.
+		// Walk the class tree to find a variable/parameter with this name.
+		const GDScriptParser::ClassNode *cls = parser.get_tree();
+		GDScriptParser::DataType base_type;
+
+		// Check class members.
+		if (cls && cls->has_member(StringName(call_ctx.base_text))) {
+			const GDScriptParser::ClassNode::Member &member = cls->get_member(StringName(call_ctx.base_text));
+			if (member.type == GDScriptParser::ClassNode::Member::VARIABLE) {
+				base_type = member.variable->get_datatype();
+			}
+		}
+
+		// If the base is a known native class name (meta-type call like Node.new()).
+		if (!base_type.is_set() && db && db->class_exists(StringName(call_ctx.base_text))) {
+			// Look up as static/constructor call on the class itself.
+			if (call_ctx.func_name == "new") {
+				// new() is a constructor — no special MethodInfo, just show empty params.
+				SignatureInformation sig;
+				sig.label = call_ctx.base_text + ".new()";
+				help.signatures.push_back(sig);
+				found_sig = true;
+			} else {
+				MethodInfo mi;
+				if (db->get_method_info(StringName(call_ctx.base_text), StringName(call_ctx.func_name), &mi)) {
+					help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+					found_sig = true;
+				}
+			}
+		}
+
+		// Try native type method lookup from resolved base_type.
+		if (!found_sig && base_type.is_set()) {
+			if (base_type.kind == GDScriptParser::DataType::NATIVE && db) {
+				MethodInfo mi;
+				if (db->get_method_info(base_type.native_type, StringName(call_ctx.func_name), &mi)) {
+					help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+					found_sig = true;
+				}
+			} else if (base_type.kind == GDScriptParser::DataType::BUILTIN) {
+				if (Variant::has_builtin_method(base_type.builtin_type, StringName(call_ctx.func_name))) {
+					MethodInfo mi = Variant::get_builtin_method_info(base_type.builtin_type, StringName(call_ctx.func_name));
+					help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+					found_sig = true;
+				}
+			} else if (base_type.kind == GDScriptParser::DataType::CLASS && base_type.class_type) {
+				// Script class — look for function in AST.
+				const GDScriptParser::ClassNode *target_cls = base_type.class_type;
+				if (target_cls->has_member(StringName(call_ctx.func_name))) {
+					const GDScriptParser::ClassNode::Member &member = target_cls->get_member(StringName(call_ctx.func_name));
+					if (member.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+						help.signatures.push_back(_sig_from_function_node(member.function));
+						found_sig = true;
+					}
+				}
+			}
+		}
+
+		// Fallback: try to find the variable as a local/parameter by scanning suites.
+		// (This handles cases like `var n: Node = ...; n.method(`)
+		if (!found_sig && db) {
+			// Walk all functions in the class to find locals at the call site.
+			if (cls) {
+				for (int i = 0; i < cls->members.size(); i++) {
+					if (found_sig) break;
+					const GDScriptParser::ClassNode::Member &member = cls->members[i];
+					if (member.type != GDScriptParser::ClassNode::Member::FUNCTION) continue;
+
+					const GDScriptParser::FunctionNode *func = member.function;
+					// Check if cursor is inside this function.
+					if (line + 1 < func->start_line || line + 1 > func->end_line) continue;
+
+					// Check parameters.
+					for (int j = 0; j < func->parameters.size(); j++) {
+						if (func->parameters[j]->identifier->name == StringName(call_ctx.base_text)) {
+							base_type = func->parameters[j]->get_datatype();
+							break;
+						}
+					}
+
+					// Walk suites for local variables.
+					if (!base_type.is_set() && func->body) {
+						const GDScriptParser::SuiteNode *suite = func->body;
+						while (suite) {
+							for (int j = 0; j < suite->locals.size(); j++) {
+								if (suite->locals[j].name == StringName(call_ctx.base_text)) {
+									base_type = suite->locals[j].get_datatype();
+									break;
+								}
+							}
+							if (base_type.is_set()) break;
+							suite = suite->parent_block;
+						}
+					}
+
+					if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE) {
+						MethodInfo mi;
+						if (db->get_method_info(base_type.native_type, StringName(call_ctx.func_name), &mi)) {
+							help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+							found_sig = true;
+						}
+					} else if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::BUILTIN) {
+						if (Variant::has_builtin_method(base_type.builtin_type, StringName(call_ctx.func_name))) {
+							MethodInfo mi = Variant::get_builtin_method_info(base_type.builtin_type, StringName(call_ctx.func_name));
+							help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+							found_sig = true;
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Bare function call: func(
+		// Check: self class methods, then utility functions, then builtin constructors.
+		String file_path = uri_to_path(uri);
+		GDScriptParser parser;
+		GDScriptAnalyzer analyzer(&parser);
+		parser.parse(source, file_path, false);
+		analyzer.analyze();
+
+		const GDScriptParser::ClassNode *cls = parser.get_tree();
+
+		// Self class methods (walks up to native base).
+		if (cls) {
+			// Script-defined functions first.
+			if (cls->has_member(StringName(call_ctx.func_name))) {
+				const GDScriptParser::ClassNode::Member &member = cls->get_member(StringName(call_ctx.func_name));
+				if (member.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+					help.signatures.push_back(_sig_from_function_node(member.function));
+					found_sig = true;
+				}
+			}
+
+			// Native base methods.
+			if (!found_sig && db) {
+				GDScriptParser::DataType base_type = cls->base_type;
+				while (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE) {
+					MethodInfo mi;
+					if (db->get_method_info(base_type.native_type, StringName(call_ctx.func_name), &mi)) {
+						help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+						found_sig = true;
+						break;
+					}
+					StringName parent = db->get_parent_class(base_type.native_type);
+					if (parent == StringName() || parent == base_type.native_type) break;
+					base_type.native_type = parent;
+				}
+			}
+		}
+
+		// Utility functions.
+		if (!found_sig && Variant::has_utility_function(StringName(call_ctx.func_name))) {
+			MethodInfo mi = Variant::get_utility_function_info(StringName(call_ctx.func_name));
+			help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+			found_sig = true;
+		}
+
+		// GDScript utility functions.
+		if (!found_sig && GDScriptUtilityFunctions::function_exists(StringName(call_ctx.func_name))) {
+			MethodInfo mi = GDScriptUtilityFunctions::get_function_info(StringName(call_ctx.func_name));
+			help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
+			found_sig = true;
+		}
+	}
+
+	if (!found_sig) {
+		return make_response(p_id, Variant());
+	}
+
+	help.active_parameter = call_ctx.active_param;
+	return make_response(p_id, help.to_dict());
 }
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +2155,115 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 		hover_text = _build_hover_text(ident);
 	}
 
+	// Fallback for native method calls (e.g. n.add_child) where the identifier
+	// source is unresolved. Detect "base.method" pattern and look up in LinterDB.
+	if (ident && (hover_text.is_empty() || hover_text == String(ident->name))) {
+		// Check if this identifier is preceded by a dot in the source text.
+		String word = _get_word_at_position(source, line, character);
+		if (!word.is_empty()) {
+			// Find the word start position on this line.
+			Vector<String> lines = source.split("\n");
+			if (line < lines.size()) {
+				String line_text = lines[line];
+				int word_start = character;
+				while (word_start > 0 && ((line_text[word_start - 1] >= 'a' && line_text[word_start - 1] <= 'z') ||
+						(line_text[word_start - 1] >= 'A' && line_text[word_start - 1] <= 'Z') ||
+						(line_text[word_start - 1] >= '0' && line_text[word_start - 1] <= '9') ||
+						line_text[word_start - 1] == '_')) {
+					word_start--;
+				}
+				// Check for dot before the word.
+				int dot_pos = word_start - 1;
+				while (dot_pos >= 0 && line_text[dot_pos] == ' ') {
+					dot_pos--;
+				}
+				if (dot_pos >= 0 && line_text[dot_pos] == '.') {
+					// Extract the base identifier.
+					int base_end = dot_pos - 1;
+					while (base_end >= 0 && line_text[base_end] == ' ') {
+						base_end--;
+					}
+					int base_start = base_end;
+					while (base_start >= 0 && ((line_text[base_start] >= 'a' && line_text[base_start] <= 'z') ||
+							(line_text[base_start] >= 'A' && line_text[base_start] <= 'Z') ||
+							(line_text[base_start] >= '0' && line_text[base_start] <= '9') ||
+							line_text[base_start] == '_')) {
+						base_start--;
+					}
+					base_start++;
+					if (base_start <= base_end) {
+						String base_name = line_text.substr(base_start, base_end - base_start + 1);
+
+						// Try to resolve the base type from the parsed AST.
+						GDScriptParser::DataType base_type;
+						const GDScriptParser::ClassNode *cls = parser.get_tree();
+
+						// Check class members.
+						if (cls && cls->has_member(StringName(base_name))) {
+							const GDScriptParser::ClassNode::Member &member = cls->get_member(StringName(base_name));
+							if (member.type == GDScriptParser::ClassNode::Member::VARIABLE) {
+								base_type = member.variable->get_datatype();
+							}
+						}
+
+						// Check function locals/parameters.
+						if (!base_type.is_set() && cls) {
+							for (int i = 0; i < cls->members.size(); i++) {
+								if (base_type.is_set()) break;
+								const GDScriptParser::ClassNode::Member &member = cls->members[i];
+								if (member.type != GDScriptParser::ClassNode::Member::FUNCTION) continue;
+								const GDScriptParser::FunctionNode *func = member.function;
+								if (parser_line < func->start_line || parser_line > func->end_line) continue;
+								for (int j = 0; j < func->parameters.size(); j++) {
+									if (func->parameters[j]->identifier->name == StringName(base_name)) {
+										base_type = func->parameters[j]->get_datatype();
+										break;
+									}
+								}
+								if (!base_type.is_set() && func->body) {
+									const GDScriptParser::SuiteNode *suite = func->body;
+									while (suite && !base_type.is_set()) {
+										for (int j = 0; j < suite->locals.size(); j++) {
+											if (suite->locals[j].name == StringName(base_name)) {
+												base_type = suite->locals[j].get_datatype();
+												break;
+											}
+										}
+										suite = suite->parent_block;
+									}
+								}
+							}
+						}
+
+						// Check if base is a native class name (meta-type).
+						LinterDB *db = LinterDB::get_singleton();
+						if (!base_type.is_set() && db && db->class_exists(StringName(base_name))) {
+							MethodInfo mi;
+							if (db->get_method_info(StringName(base_name), StringName(word), &mi)) {
+								hover_text = "func " + base_name + "." + word + _method_signature(mi);
+							}
+						}
+
+						// Look up method from resolved base type.
+						if (hover_text.is_empty() || hover_text == String(ident->name)) {
+							if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE && db) {
+								MethodInfo mi;
+								if (db->get_method_info(base_type.native_type, StringName(word), &mi)) {
+									hover_text = "func " + String(base_type.native_type) + "." + word + _method_signature(mi);
+								}
+							} else if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::BUILTIN) {
+								if (Variant::has_builtin_method(base_type.builtin_type, StringName(word))) {
+									MethodInfo mi = Variant::get_builtin_method_info(base_type.builtin_type, StringName(word));
+									hover_text = "func " + Variant::get_type_name(base_type.builtin_type) + "." + word + _method_signature(mi);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Text-based fallback for global class names in extends, type annotations, etc.
 	if (hover_text.is_empty()) {
 		String word = _get_word_at_position(source, line, character);
@@ -1724,6 +2336,11 @@ bool Server::process_message(const Dictionary &p_msg) {
 
 	if (method == "textDocument/completion") {
 		Transport::write_message(handle_completion(id, params));
+		return true;
+	}
+
+	if (method == "textDocument/signatureHelp") {
+		Transport::write_message(handle_signature_help(id, params));
 		return true;
 	}
 
