@@ -68,6 +68,212 @@ static MethodInfo _parse_method_info(const Dictionary &d) {
 	return mi;
 }
 
+// --- Doc data parsing helpers ---
+
+static DocArgumentData _parse_doc_argument(const Dictionary &d) {
+	DocArgumentData arg;
+	arg.name = d.get("name", "");
+	arg.type = d.get("type", "");
+	arg.enumeration = d.get("enumeration", "");
+	arg.is_bitfield = d.get("is_bitfield", false);
+	arg.default_value = d.get("default_value", "");
+	return arg;
+}
+
+static DocMethodData _parse_doc_method(const Dictionary &d) {
+	DocMethodData m;
+	m.name = d.get("name", "");
+	m.return_type = d.get("return_type", "");
+	m.return_enum = d.get("return_enum", "");
+	m.qualifiers = d.get("qualifiers", "");
+	m.description = d.get("description", "");
+	if (d.has("deprecated")) {
+		m.is_deprecated = true;
+		m.deprecated_message = d["deprecated"];
+	}
+	if (d.has("experimental")) {
+		m.is_experimental = true;
+		m.experimental_message = d["experimental"];
+	}
+	Array args = d.get("arguments", Array());
+	for (int i = 0; i < args.size(); i++) {
+		m.arguments.push_back(_parse_doc_argument(args[i]));
+	}
+	return m;
+}
+
+static DocPropertyData _parse_doc_property(const Dictionary &d) {
+	DocPropertyData p;
+	p.name = d.get("name", "");
+	p.type = d.get("type", "");
+	p.enumeration = d.get("enumeration", "");
+	p.description = d.get("description", "");
+	p.setter = d.get("setter", "");
+	p.getter = d.get("getter", "");
+	p.default_value = d.get("default_value", "");
+	if (d.has("deprecated")) {
+		p.is_deprecated = true;
+		p.deprecated_message = d["deprecated"];
+	}
+	if (d.has("experimental")) {
+		p.is_experimental = true;
+		p.experimental_message = d["experimental"];
+	}
+	return p;
+}
+
+static DocConstantData _parse_doc_constant(const Dictionary &d) {
+	DocConstantData c;
+	c.name = d.get("name", "");
+	c.value = d.get("value", "");
+	c.type = d.get("type", "");
+	c.enumeration = d.get("enumeration", "");
+	c.description = d.get("description", "");
+	if (d.has("deprecated")) {
+		c.is_deprecated = true;
+		c.deprecated_message = d["deprecated"];
+	}
+	if (d.has("experimental")) {
+		c.is_experimental = true;
+		c.experimental_message = d["experimental"];
+	}
+	return c;
+}
+
+static DocEnumData _parse_doc_enum(const Dictionary &d) {
+	DocEnumData e;
+	e.description = d.get("description", "");
+	if (d.has("deprecated")) {
+		e.is_deprecated = true;
+		e.deprecated_message = d["deprecated"];
+	}
+	if (d.has("experimental")) {
+		e.is_experimental = true;
+		e.experimental_message = d["experimental"];
+	}
+	return e;
+}
+
+static DocThemeItemData _parse_doc_theme_item(const Dictionary &d) {
+	DocThemeItemData t;
+	t.name = d.get("name", "");
+	t.type = d.get("type", "");
+	t.data_type = d.get("data_type", "");
+	t.description = d.get("description", "");
+	t.default_value = d.get("default_value", "");
+	return t;
+}
+
+static DocTutorialData _parse_doc_tutorial(const Dictionary &d) {
+	DocTutorialData t;
+	t.title = d.get("title", "");
+	t.link = d.get("link", "");
+	return t;
+}
+
+static void _parse_doc_class(const Dictionary &d, DocClassData &r_doc) {
+	r_doc.brief_description = d.get("brief_description", "");
+	r_doc.description = d.get("description", "");
+	r_doc.keywords = d.get("keywords", "");
+	if (d.has("deprecated")) {
+		r_doc.is_deprecated = true;
+		r_doc.deprecated_message = d["deprecated"];
+	}
+	if (d.has("experimental")) {
+		r_doc.is_experimental = true;
+		r_doc.experimental_message = d["experimental"];
+	}
+
+	Array tutorials = d.get("tutorials", Array());
+	for (int i = 0; i < tutorials.size(); i++) {
+		r_doc.tutorials.push_back(_parse_doc_tutorial(tutorials[i]));
+	}
+
+	Array methods = d.get("methods", Array());
+	for (int i = 0; i < methods.size(); i++) {
+		r_doc.methods.push_back(_parse_doc_method(methods[i]));
+	}
+
+	Array constructors = d.get("constructors", Array());
+	for (int i = 0; i < constructors.size(); i++) {
+		r_doc.constructors.push_back(_parse_doc_method(constructors[i]));
+	}
+
+	Array operators = d.get("operators", Array());
+	for (int i = 0; i < operators.size(); i++) {
+		r_doc.operators.push_back(_parse_doc_method(operators[i]));
+	}
+
+	Array signals = d.get("signals", Array());
+	for (int i = 0; i < signals.size(); i++) {
+		r_doc.signals.push_back(_parse_doc_method(signals[i]));
+	}
+
+	Array properties = d.get("properties", Array());
+	for (int i = 0; i < properties.size(); i++) {
+		r_doc.properties.push_back(_parse_doc_property(properties[i]));
+	}
+
+	Array constants = d.get("constants", Array());
+	for (int i = 0; i < constants.size(); i++) {
+		r_doc.constants.push_back(_parse_doc_constant(constants[i]));
+	}
+
+	Dictionary enums = d.get("enums", Dictionary());
+	LocalVector<Variant> enum_keys = enums.get_key_list();
+	for (const Variant &ek : enum_keys) {
+		r_doc.enums[String(ek)] = _parse_doc_enum(enums[ek]);
+	}
+
+	Array annotations = d.get("annotations", Array());
+	for (int i = 0; i < annotations.size(); i++) {
+		r_doc.annotations.push_back(_parse_doc_method(annotations[i]));
+	}
+
+	Array theme_properties = d.get("theme_properties", Array());
+	for (int i = 0; i < theme_properties.size(); i++) {
+		r_doc.theme_properties.push_back(_parse_doc_theme_item(theme_properties[i]));
+	}
+}
+
+// --- DocClassData lookup helpers ---
+
+const DocMethodData *DocClassData::find_method(const String &p_name) const {
+	for (int i = 0; i < methods.size(); i++) {
+		if (methods[i].name == p_name) {
+			return &methods[i];
+		}
+	}
+	return nullptr;
+}
+
+const DocMethodData *DocClassData::find_signal(const String &p_name) const {
+	for (int i = 0; i < signals.size(); i++) {
+		if (signals[i].name == p_name) {
+			return &signals[i];
+		}
+	}
+	return nullptr;
+}
+
+const DocPropertyData *DocClassData::find_property(const String &p_name) const {
+	for (int i = 0; i < properties.size(); i++) {
+		if (properties[i].name == p_name) {
+			return &properties[i];
+		}
+	}
+	return nullptr;
+}
+
+const DocConstantData *DocClassData::find_constant(const String &p_name) const {
+	for (int i = 0; i < constants.size(); i++) {
+		if (constants[i].name == p_name) {
+			return &constants[i];
+		}
+	}
+	return nullptr;
+}
+
 Error LinterDB::load_from_json(const String &p_path) {
 	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
 	ERR_FAIL_COND_V_MSG(f.is_null(), ERR_FILE_NOT_FOUND, vformat("Cannot open linterdb file: %s", p_path));
@@ -167,6 +373,11 @@ Error LinterDB::load_from_json(const String &p_path) {
 				for (const Variant &ck : const_keys) {
 					cd.constants[StringName(String(ck))] = (int64_t)consts[ck];
 				}
+			}
+
+			// Documentation.
+			if (cls.has("doc")) {
+				_parse_doc_class(cls["doc"], cd.doc);
 			}
 
 			classes[cd.name] = cd;
@@ -548,6 +759,80 @@ void LinterDB::get_integer_constant_list(const StringName &p_class, List<String>
 		}
 		current = cd->parent;
 	}
+}
+
+// --- Documentation queries ---
+
+const DocClassData *LinterDB::get_class_doc(const StringName &p_class) const {
+	const ClassData *cd = get_class_data(p_class);
+	if (cd && (!cd->doc.brief_description.is_empty() || !cd->doc.description.is_empty())) {
+		return &cd->doc;
+	}
+	return nullptr;
+}
+
+const DocMethodData *LinterDB::get_method_doc(const StringName &p_class, const StringName &p_method) const {
+	StringName current = p_class;
+	while (current != StringName()) {
+		const ClassData *cd = get_class_data(current);
+		if (!cd) {
+			break;
+		}
+		const DocMethodData *md = cd->doc.find_method(String(p_method));
+		if (md) {
+			return md;
+		}
+		current = cd->parent;
+	}
+	return nullptr;
+}
+
+const DocPropertyData *LinterDB::get_property_doc(const StringName &p_class, const StringName &p_property) const {
+	StringName current = p_class;
+	while (current != StringName()) {
+		const ClassData *cd = get_class_data(current);
+		if (!cd) {
+			break;
+		}
+		const DocPropertyData *pd = cd->doc.find_property(String(p_property));
+		if (pd) {
+			return pd;
+		}
+		current = cd->parent;
+	}
+	return nullptr;
+}
+
+const DocMethodData *LinterDB::get_signal_doc(const StringName &p_class, const StringName &p_signal) const {
+	StringName current = p_class;
+	while (current != StringName()) {
+		const ClassData *cd = get_class_data(current);
+		if (!cd) {
+			break;
+		}
+		const DocMethodData *sd = cd->doc.find_signal(String(p_signal));
+		if (sd) {
+			return sd;
+		}
+		current = cd->parent;
+	}
+	return nullptr;
+}
+
+const DocConstantData *LinterDB::get_constant_doc(const StringName &p_class, const StringName &p_constant) const {
+	StringName current = p_class;
+	while (current != StringName()) {
+		const ClassData *cd = get_class_data(current);
+		if (!cd) {
+			break;
+		}
+		const DocConstantData *c = cd->doc.find_constant(String(p_constant));
+		if (c) {
+			return c;
+		}
+		current = cd->parent;
+	}
+	return nullptr;
 }
 
 } // namespace linter

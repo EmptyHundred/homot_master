@@ -18,6 +18,109 @@
 
 namespace linter {
 
+// Documentation for a method argument (from XML docs).
+struct DocArgumentData {
+	String name;
+	String type;
+	String enumeration;
+	bool is_bitfield = false;
+	String default_value;
+};
+
+// Documentation for a method (from XML docs).
+struct DocMethodData {
+	String name;
+	String return_type;
+	String return_enum;
+	String qualifiers;
+	String description;
+	bool is_deprecated = false;
+	String deprecated_message;
+	bool is_experimental = false;
+	String experimental_message;
+	Vector<DocArgumentData> arguments;
+};
+
+// Documentation for a property (from XML docs).
+struct DocPropertyData {
+	String name;
+	String type;
+	String enumeration;
+	String description;
+	String setter;
+	String getter;
+	String default_value;
+	bool is_deprecated = false;
+	String deprecated_message;
+	bool is_experimental = false;
+	String experimental_message;
+};
+
+// Documentation for a constant (from XML docs).
+struct DocConstantData {
+	String name;
+	String value;
+	String type;
+	String enumeration;
+	String description;
+	bool is_deprecated = false;
+	String deprecated_message;
+	bool is_experimental = false;
+	String experimental_message;
+};
+
+// Documentation for an enum (from XML docs).
+struct DocEnumData {
+	String description;
+	bool is_deprecated = false;
+	String deprecated_message;
+	bool is_experimental = false;
+	String experimental_message;
+};
+
+// Documentation for a theme item (from XML docs).
+struct DocThemeItemData {
+	String name;
+	String type;
+	String data_type;
+	String description;
+	String default_value;
+};
+
+// Documentation for a tutorial link.
+struct DocTutorialData {
+	String title;
+	String link;
+};
+
+// Full documentation for a class (from XML docs).
+struct DocClassData {
+	String brief_description;
+	String description;
+	String keywords;
+	bool is_deprecated = false;
+	String deprecated_message;
+	bool is_experimental = false;
+	String experimental_message;
+
+	Vector<DocTutorialData> tutorials;
+	Vector<DocMethodData> methods;
+	Vector<DocMethodData> constructors;
+	Vector<DocMethodData> operators;
+	Vector<DocMethodData> signals;
+	Vector<DocPropertyData> properties;
+	Vector<DocConstantData> constants;
+	HashMap<String, DocEnumData> enums;
+	Vector<DocMethodData> annotations;
+	Vector<DocThemeItemData> theme_properties;
+
+	// Quick lookup helpers.
+	const DocMethodData *find_method(const String &p_name) const;
+	const DocMethodData *find_signal(const String &p_name) const;
+	const DocPropertyData *find_property(const String &p_name) const;
+	const DocConstantData *find_constant(const String &p_name) const;
+};
+
 // Per-method metadata loaded from JSON.
 struct MethodData {
 	MethodInfo info;
@@ -48,6 +151,9 @@ struct ClassData {
 	HashMap<StringName, int64_t> constants;
 	// constant_name -> enum_name (reverse lookup)
 	HashMap<StringName, StringName> constant_to_enum;
+
+	// Documentation from XML docs (may be empty if docs not loaded).
+	DocClassData doc;
 };
 
 // Singleton data store. Loaded once at startup.
@@ -93,6 +199,14 @@ public:
 
 	// Singleton queries.
 	bool has_singleton(const StringName &p_name) const;
+
+	// Documentation queries.
+	const DocClassData *get_class_doc(const StringName &p_class) const;
+	// Walks inheritance to find method doc.
+	const DocMethodData *get_method_doc(const StringName &p_class, const StringName &p_method) const;
+	const DocPropertyData *get_property_doc(const StringName &p_class, const StringName &p_property) const;
+	const DocMethodData *get_signal_doc(const StringName &p_class, const StringName &p_signal) const;
+	const DocConstantData *get_constant_doc(const StringName &p_class, const StringName &p_constant) const;
 
 	// Listing.
 	void get_class_list(LocalVector<StringName> &r_classes) const;

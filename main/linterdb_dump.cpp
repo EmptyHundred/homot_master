@@ -14,6 +14,11 @@
 #include "core/object/method_bind.h"
 #include "core/variant/variant.h"
 
+#ifdef TOOLS_ENABLED
+#include "editor/doc/doc_data_class_path.gen.h"
+#include "editor/doc/doc_tools.h"
+#endif
+
 static Dictionary _property_info_to_dict(const PropertyInfo &p_info) {
 	Dictionary d;
 	d["type"] = (int)p_info.type;
@@ -63,7 +68,361 @@ static Dictionary _method_info_to_dict(const MethodInfo &p_info) {
 	return d;
 }
 
-Error LinterDBDump::generate_linterdb_json_file(const String &p_path) {
+// Convert a DocData::ArgumentDoc to a JSON dictionary.
+static Dictionary _doc_argument_to_dict(const DocData::ArgumentDoc &p_arg) {
+	Dictionary d;
+	if (!p_arg.name.is_empty()) {
+		d["name"] = p_arg.name;
+	}
+	if (!p_arg.type.is_empty()) {
+		d["type"] = p_arg.type;
+	}
+	if (!p_arg.enumeration.is_empty()) {
+		d["enumeration"] = p_arg.enumeration;
+		d["is_bitfield"] = p_arg.is_bitfield;
+	}
+	if (!p_arg.default_value.is_empty()) {
+		d["default_value"] = p_arg.default_value;
+	}
+	return d;
+}
+
+// Convert a DocData::MethodDoc to a JSON dictionary.
+static Dictionary _doc_method_to_dict(const DocData::MethodDoc &p_method) {
+	Dictionary d;
+	d["name"] = p_method.name;
+	if (!p_method.return_type.is_empty()) {
+		d["return_type"] = p_method.return_type;
+	}
+	if (!p_method.return_enum.is_empty()) {
+		d["return_enum"] = p_method.return_enum;
+		d["return_is_bitfield"] = p_method.return_is_bitfield;
+	}
+	if (!p_method.qualifiers.is_empty()) {
+		d["qualifiers"] = p_method.qualifiers;
+	}
+	if (!p_method.description.is_empty()) {
+		d["description"] = p_method.description;
+	}
+	if (p_method.is_deprecated) {
+		d["deprecated"] = p_method.deprecated_message;
+	}
+	if (p_method.is_experimental) {
+		d["experimental"] = p_method.experimental_message;
+	}
+	if (!p_method.arguments.is_empty()) {
+		Array args;
+		for (int i = 0; i < p_method.arguments.size(); i++) {
+			args.push_back(_doc_argument_to_dict(p_method.arguments[i]));
+		}
+		d["arguments"] = args;
+	}
+	return d;
+}
+
+// Convert a DocData::PropertyDoc to a JSON dictionary.
+static Dictionary _doc_property_to_dict(const DocData::PropertyDoc &p_prop) {
+	Dictionary d;
+	d["name"] = p_prop.name;
+	if (!p_prop.type.is_empty()) {
+		d["type"] = p_prop.type;
+	}
+	if (!p_prop.enumeration.is_empty()) {
+		d["enumeration"] = p_prop.enumeration;
+		d["is_bitfield"] = p_prop.is_bitfield;
+	}
+	if (!p_prop.description.is_empty()) {
+		d["description"] = p_prop.description;
+	}
+	if (!p_prop.setter.is_empty()) {
+		d["setter"] = p_prop.setter;
+	}
+	if (!p_prop.getter.is_empty()) {
+		d["getter"] = p_prop.getter;
+	}
+	if (!p_prop.default_value.is_empty()) {
+		d["default_value"] = p_prop.default_value;
+	}
+	if (p_prop.overridden) {
+		d["overridden"] = true;
+		if (!p_prop.overrides.is_empty()) {
+			d["overrides"] = p_prop.overrides;
+		}
+	}
+	if (p_prop.is_deprecated) {
+		d["deprecated"] = p_prop.deprecated_message;
+	}
+	if (p_prop.is_experimental) {
+		d["experimental"] = p_prop.experimental_message;
+	}
+	return d;
+}
+
+// Convert a DocData::ConstantDoc to a JSON dictionary.
+static Dictionary _doc_constant_to_dict(const DocData::ConstantDoc &p_const) {
+	Dictionary d;
+	d["name"] = p_const.name;
+	if (!p_const.value.is_empty()) {
+		d["value"] = p_const.value;
+	}
+	d["is_value_valid"] = p_const.is_value_valid;
+	if (!p_const.type.is_empty()) {
+		d["type"] = p_const.type;
+	}
+	if (!p_const.enumeration.is_empty()) {
+		d["enumeration"] = p_const.enumeration;
+		d["is_bitfield"] = p_const.is_bitfield;
+	}
+	if (!p_const.description.is_empty()) {
+		d["description"] = p_const.description;
+	}
+	if (p_const.is_deprecated) {
+		d["deprecated"] = p_const.deprecated_message;
+	}
+	if (p_const.is_experimental) {
+		d["experimental"] = p_const.experimental_message;
+	}
+	return d;
+}
+
+// Convert a DocData::ThemeItemDoc to a JSON dictionary.
+static Dictionary _doc_theme_item_to_dict(const DocData::ThemeItemDoc &p_item) {
+	Dictionary d;
+	d["name"] = p_item.name;
+	if (!p_item.type.is_empty()) {
+		d["type"] = p_item.type;
+	}
+	if (!p_item.data_type.is_empty()) {
+		d["data_type"] = p_item.data_type;
+	}
+	if (!p_item.description.is_empty()) {
+		d["description"] = p_item.description;
+	}
+	if (!p_item.default_value.is_empty()) {
+		d["default_value"] = p_item.default_value;
+	}
+	if (p_item.is_deprecated) {
+		d["deprecated"] = p_item.deprecated_message;
+	}
+	if (p_item.is_experimental) {
+		d["experimental"] = p_item.experimental_message;
+	}
+	return d;
+}
+
+// Convert a DocData::EnumDoc to a JSON dictionary.
+static Dictionary _doc_enum_to_dict(const DocData::EnumDoc &p_enum) {
+	Dictionary d;
+	if (!p_enum.description.is_empty()) {
+		d["description"] = p_enum.description;
+	}
+	if (p_enum.is_deprecated) {
+		d["deprecated"] = p_enum.deprecated_message;
+	}
+	if (p_enum.is_experimental) {
+		d["experimental"] = p_enum.experimental_message;
+	}
+	return d;
+}
+
+// Convert a DocData::TutorialDoc to a JSON dictionary.
+static Dictionary _doc_tutorial_to_dict(const DocData::TutorialDoc &p_tutorial) {
+	Dictionary d;
+	if (!p_tutorial.link.is_empty()) {
+		d["link"] = p_tutorial.link;
+	}
+	if (!p_tutorial.title.is_empty()) {
+		d["title"] = p_tutorial.title;
+	}
+	return d;
+}
+
+// Add a complete "doc" dictionary for a class from its DocData::ClassDoc.
+static Dictionary _class_doc_to_dict(const DocData::ClassDoc &p_class_doc) {
+	Dictionary doc;
+
+	if (!p_class_doc.brief_description.is_empty()) {
+		doc["brief_description"] = p_class_doc.brief_description;
+	}
+	if (!p_class_doc.description.is_empty()) {
+		doc["description"] = p_class_doc.description;
+	}
+	if (!p_class_doc.keywords.is_empty()) {
+		doc["keywords"] = p_class_doc.keywords;
+	}
+	if (p_class_doc.is_deprecated) {
+		doc["deprecated"] = p_class_doc.deprecated_message;
+	}
+	if (p_class_doc.is_experimental) {
+		doc["experimental"] = p_class_doc.experimental_message;
+	}
+
+	// Tutorials.
+	if (!p_class_doc.tutorials.is_empty()) {
+		Array tutorials;
+		for (int i = 0; i < p_class_doc.tutorials.size(); i++) {
+			tutorials.push_back(_doc_tutorial_to_dict(p_class_doc.tutorials[i]));
+		}
+		doc["tutorials"] = tutorials;
+	}
+
+	// Methods.
+	if (!p_class_doc.methods.is_empty()) {
+		Array methods;
+		for (int i = 0; i < p_class_doc.methods.size(); i++) {
+			methods.push_back(_doc_method_to_dict(p_class_doc.methods[i]));
+		}
+		doc["methods"] = methods;
+	}
+
+	// Constructors.
+	if (!p_class_doc.constructors.is_empty()) {
+		Array constructors;
+		for (int i = 0; i < p_class_doc.constructors.size(); i++) {
+			constructors.push_back(_doc_method_to_dict(p_class_doc.constructors[i]));
+		}
+		doc["constructors"] = constructors;
+	}
+
+	// Operators.
+	if (!p_class_doc.operators.is_empty()) {
+		Array operators;
+		for (int i = 0; i < p_class_doc.operators.size(); i++) {
+			operators.push_back(_doc_method_to_dict(p_class_doc.operators[i]));
+		}
+		doc["operators"] = operators;
+	}
+
+	// Signals.
+	if (!p_class_doc.signals.is_empty()) {
+		Array signals;
+		for (int i = 0; i < p_class_doc.signals.size(); i++) {
+			signals.push_back(_doc_method_to_dict(p_class_doc.signals[i]));
+		}
+		doc["signals"] = signals;
+	}
+
+	// Properties.
+	if (!p_class_doc.properties.is_empty()) {
+		Array properties;
+		for (int i = 0; i < p_class_doc.properties.size(); i++) {
+			properties.push_back(_doc_property_to_dict(p_class_doc.properties[i]));
+		}
+		doc["properties"] = properties;
+	}
+
+	// Constants.
+	if (!p_class_doc.constants.is_empty()) {
+		Array constants;
+		for (int i = 0; i < p_class_doc.constants.size(); i++) {
+			constants.push_back(_doc_constant_to_dict(p_class_doc.constants[i]));
+		}
+		doc["constants"] = constants;
+	}
+
+	// Enums (with descriptions).
+	if (!p_class_doc.enums.is_empty()) {
+		Dictionary enums;
+		for (const KeyValue<String, DocData::EnumDoc> &E : p_class_doc.enums) {
+			enums[E.key] = _doc_enum_to_dict(E.value);
+		}
+		doc["enums"] = enums;
+	}
+
+	// Annotations.
+	if (!p_class_doc.annotations.is_empty()) {
+		Array annotations;
+		for (int i = 0; i < p_class_doc.annotations.size(); i++) {
+			annotations.push_back(_doc_method_to_dict(p_class_doc.annotations[i]));
+		}
+		doc["annotations"] = annotations;
+	}
+
+	// Theme properties.
+	if (!p_class_doc.theme_properties.is_empty()) {
+		Array theme_properties;
+		for (int i = 0; i < p_class_doc.theme_properties.size(); i++) {
+			theme_properties.push_back(_doc_theme_item_to_dict(p_class_doc.theme_properties[i]));
+		}
+		doc["theme_properties"] = theme_properties;
+	}
+
+	return doc;
+}
+
+#ifdef TOOLS_ENABLED
+// Load documentation from Godot source XML files.
+// p_source_root should be the Godot source root (containing doc/classes/).
+static bool _load_doc_data(const String &p_source_root, DocTools &r_doc) {
+	// Generate API stubs from ClassDB.
+	r_doc.generate();
+	print_line(vformat("Generated doc stubs for %d classes.", r_doc.class_list.size()));
+
+	// Load XML doc descriptions from all known paths and merge.
+	DocTools docsrc;
+	HashSet<String> loaded_paths;
+
+	// Load from module/platform doc_classes paths.
+	for (int i = 0; i < _doc_data_class_path_count; i++) {
+		String path = _doc_data_class_paths[i].path;
+		if (path.is_relative_path()) {
+			path = p_source_root.path_join(path);
+		}
+		if (!loaded_paths.has(path)) {
+			loaded_paths.insert(path);
+			Error err = docsrc.load_classes(path);
+			if (err != OK) {
+				print_line(vformat("  Warning: Failed to load docs from: %s", path));
+			}
+		}
+	}
+
+	// Load from the main doc/classes/ directory.
+	String main_doc_path = p_source_root.path_join("doc/classes");
+	print_line(vformat("Loading main docs from: %s", main_doc_path));
+	if (!loaded_paths.has(main_doc_path)) {
+		loaded_paths.insert(main_doc_path);
+		Error err = docsrc.load_classes(main_doc_path);
+		if (err != OK) {
+			print_line(vformat("  Warning: Failed to load docs from: %s", main_doc_path));
+		}
+	}
+
+	print_line(vformat("Loaded %d doc classes from XML.", docsrc.class_list.size()));
+	r_doc.merge_from(docsrc);
+
+	// Verify merge worked.
+	if (r_doc.class_list.has("Node")) {
+		const DocData::ClassDoc &node_doc = r_doc.class_list["Node"];
+		print_line(vformat("  Node brief_description length: %d", node_doc.brief_description.length()));
+		int desc_count = 0;
+		for (int i = 0; i < node_doc.methods.size(); i++) {
+			if (!node_doc.methods[i].description.is_empty()) {
+				desc_count++;
+			}
+		}
+		print_line(vformat("  Node methods with descriptions: %d/%d", desc_count, node_doc.methods.size()));
+	}
+
+	return docsrc.class_list.size() > 0;
+}
+#endif // TOOLS_ENABLED
+
+Error LinterDBDump::generate_linterdb_json_file(const String &p_path, const String &p_doc_source_path) {
+	// Optionally load documentation.
+#ifdef TOOLS_ENABLED
+	DocTools doc;
+	bool has_docs = false;
+	if (!p_doc_source_path.is_empty()) {
+		has_docs = _load_doc_data(p_doc_source_path, doc);
+		if (has_docs) {
+			print_line(vformat("Loaded documentation for %d classes.", doc.class_list.size()));
+		}
+	}
+#else
+	bool has_docs = false;
+#endif
+
 	Dictionary root;
 
 	// Dump engine singletons.
@@ -176,6 +535,16 @@ Error LinterDBDump::generate_linterdb_json_file(const String &p_path) {
 					cls["constants"] = constants_dict;
 				}
 			}
+
+			// Documentation from XML docs.
+#ifdef TOOLS_ENABLED
+			if (has_docs) {
+				HashMap<String, DocData::ClassDoc>::Iterator it = doc.class_list.find(String(class_name));
+				if (it) {
+					cls["doc"] = _class_doc_to_dict(it->value);
+				}
+			}
+#endif
 
 			classes_dict[String(class_name)] = cls;
 		}
@@ -298,6 +667,16 @@ Error LinterDBDump::generate_linterdb_json_file(const String &p_path) {
 				}
 			}
 
+			// Documentation for built-in types.
+#ifdef TOOLS_ENABLED
+			if (has_docs) {
+				HashMap<String, DocData::ClassDoc>::Iterator it = doc.class_list.find(type_name);
+				if (it) {
+					type_dict["doc"] = _class_doc_to_dict(it->value);
+				}
+			}
+#endif
+
 			if (!type_dict.is_empty()) {
 				builtins[type_name] = type_dict;
 			}
@@ -328,6 +707,23 @@ Error LinterDBDump::generate_linterdb_json_file(const String &p_path) {
 				fd["args"] = args;
 			}
 
+			// Documentation for utility functions.
+#ifdef TOOLS_ENABLED
+			if (has_docs) {
+				HashMap<String, DocData::ClassDoc>::Iterator it = doc.class_list.find("@GlobalScope");
+				if (it) {
+					for (int i = 0; i < it->value.methods.size(); i++) {
+						if (it->value.methods[i].name == String(fn)) {
+							if (!it->value.methods[i].description.is_empty()) {
+								fd["description"] = it->value.methods[i].description;
+							}
+							break;
+						}
+					}
+				}
+			}
+#endif
+
 			utility_arr.push_back(fd);
 		}
 		root["utility_functions"] = utility_arr;
@@ -357,6 +753,21 @@ Error LinterDBDump::generate_linterdb_json_file(const String &p_path) {
 		root["global_enums"] = global_enums;
 		root["global_constants"] = global_constants;
 	}
+
+	// Dump documentation for classes only found in docs (e.g. @GlobalScope, @GDScript).
+#ifdef TOOLS_ENABLED
+	if (has_docs) {
+		Dictionary doc_only_classes;
+		for (const KeyValue<String, DocData::ClassDoc> &E : doc.class_list) {
+			if (E.key.begins_with("@")) {
+				doc_only_classes[E.key] = _class_doc_to_dict(E.value);
+			}
+		}
+		if (!doc_only_classes.is_empty()) {
+			root["doc_classes"] = doc_only_classes;
+		}
+	}
+#endif
 
 	// Write to file.
 	String json_text = JSON::stringify(root, "\t");

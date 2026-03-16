@@ -4187,7 +4187,20 @@ int Main::start() {
 
 #ifdef HOMOT
 		if (dump_linterdb) {
-			Error err = LinterDBDump::generate_linterdb_json_file("linterdb.json");
+			// Use the executable's grandparent directory as the source root.
+			// Executable is typically at bin/godot.exe, so go up to find doc/classes/.
+			String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+			String source_root = exe_dir.path_join("..");
+			// Verify doc/classes/ exists at the source root.
+			if (!DirAccess::exists(source_root.path_join("doc/classes"))) {
+				// Fallback: try CWD.
+				source_root = ".";
+			}
+			if (!DirAccess::exists(source_root.path_join("doc/classes"))) {
+				print_line("Warning: doc/classes/ not found. Documentation will be omitted from linterdb.json.");
+				source_root = "";
+			}
+			Error err = LinterDBDump::generate_linterdb_json_file("linterdb.json", source_root);
 			if (err == OK) {
 				print_line("Linter DB saved to: linterdb.json");
 			} else {

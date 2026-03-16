@@ -21,6 +21,10 @@
 #include "core/object/class_db.h"
 #include "core/variant/variant.h"
 
+using linter::DocClassData;
+using linter::DocConstantData;
+using linter::DocMethodData;
+using linter::DocPropertyData;
 using linter::LinterDB;
 using linter::ScriptServerStub;
 
@@ -2174,6 +2178,72 @@ static String _format_datatype(const GDScriptParser::DataType &p_type) {
 	return p_type.to_string();
 }
 
+// Convert Godot BBCode-like documentation markup to Markdown.
+static String _bbcode_to_markdown(const String &p_bbcode) {
+	String md = p_bbcode;
+	md = md.replace("[b]", "**").replace("[/b]", "**");
+	md = md.replace("[i]", "*").replace("[/i]", "*");
+	md = md.replace("[u]", "").replace("[/u]", "");
+	md = md.replace("[code]", "`").replace("[/code]", "`");
+	md = md.replace("[codeblock]", "\n```gdscript\n").replace("[/codeblock]", "\n```\n");
+	md = md.replace("[codeblocks]", "").replace("[/codeblocks]", "");
+	md = md.replace("[gdscript]", "\n```gdscript\n").replace("[/gdscript]", "\n```\n");
+	md = md.replace("[csharp]", "\n```csharp\n").replace("[/csharp]", "\n```\n");
+	md = md.replace("[br]", "\n");
+	md = md.replace("[lb]", "[").replace("[rb]", "]");
+
+	// [param name] -> `name`
+	int pos = 0;
+	while ((pos = md.find("[param ", pos)) != -1) {
+		int end = md.find("]", pos);
+		if (end == -1) break;
+		String param_name = md.substr(pos + 7, end - pos - 7);
+		md = md.substr(0, pos) + "`" + param_name + "`" + md.substr(end + 1);
+	}
+
+	// [ClassName] -> `ClassName` (simple reference)
+	pos = 0;
+	while ((pos = md.find("[", pos)) != -1) {
+		// Skip if already handled (markdown link, code block, etc.).
+		if (pos > 0 && md[pos - 1] == '`') {
+			pos++;
+			continue;
+		}
+		int end = md.find("]", pos);
+		if (end == -1) break;
+		String inner = md.substr(pos + 1, end - pos - 1);
+
+		// Skip [url] and other complex tags.
+		if (inner.begins_with("url") || inner.begins_with("/url") ||
+				inner.begins_with("color") || inner.begins_with("/color") ||
+				inner.begins_with("img") || inner.begins_with("/img")) {
+			pos = end + 1;
+			continue;
+		}
+
+		// [method name], [member name], [signal name], [constant name], [enum name], [annotation name]
+		if (inner.begins_with("method ") || inner.begins_with("member ") ||
+				inner.begins_with("signal ") || inner.begins_with("constant ") ||
+				inner.begins_with("enum ") || inner.begins_with("annotation ") ||
+				inner.begins_with("theme_item ")) {
+			int space = inner.find(" ");
+			String ref_name = inner.substr(space + 1);
+			md = md.substr(0, pos) + "`" + ref_name + "`" + md.substr(end + 1);
+			continue;
+		}
+
+		// Plain [ClassName] or other reference.
+		if (!inner.is_empty() && inner[0] >= 'A' && inner[0] <= 'Z') {
+			md = md.substr(0, pos) + "`" + inner + "`" + md.substr(end + 1);
+			continue;
+		}
+
+		pos = end + 1;
+	}
+
+	return md.strip_edges();
+}
+
 // Build a hover string for an identifier based on its source and type.
 static String _build_hover_text(const GDScriptParser::IdentifierNode *p_id) {
 	String type_str = _format_datatype(p_id->datatype);
@@ -2455,11 +2525,33 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 		}
 	}
 
-	// Text-based fallback for global class names in extends, type annotations, etc.
+	// Text-based fallback for global class names, native classes, and built-in types
+	// in extends, type annotations, etc.
 	if (hover_text.is_empty()) {
 		String word = _get_word_at_position(source, line, character);
-		if (!word.is_empty() && class_to_path.has(word)) {
-			hover_text = vformat("(global class) %s\n%s", word, class_to_path[word]);
+		if (!word.is_empty()) {
+			if (class_to_path.has(word)) {
+				hover_text = vformat("(global class) %s\n%s", word, class_to_path[word]);
+			} else {
+				LinterDB *db = LinterDB::get_singleton();
+				if (db && db->class_exists(StringName(word))) {
+					// Native class (Node, Sprite2D, etc.).
+					StringName parent = db->get_parent_class(StringName(word));
+					if (parent != StringName()) {
+						hover_text = vformat("(native class) %s extends %s", word, String(parent));
+					} else {
+						hover_text = vformat("(native class) %s", word);
+					}
+				} else {
+					// Built-in Variant types (int, float, bool, String, Vector2, etc.).
+					for (int i = 0; i < Variant::VARIANT_MAX; i++) {
+						if (Variant::get_type_name((Variant::Type)i) == word) {
+							hover_text = vformat("(built-in type) %s", word);
+							break;
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -2467,10 +2559,132 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 		return make_response(p_id, Variant());
 	}
 
+	// Look up documentation for the hovered symbol from LinterDB.
+	String hover_doc;
+	{
+		LinterDB *db = LinterDB::get_singleton();
+		if (db) {
+			String word = ident ? String(ident->name) : _get_word_at_position(source, line, character);
+			if (!word.is_empty()) {
+				// Check if this is a native class name.
+				if (db->class_exists(StringName(word))) {
+					const DocClassData *class_doc = db->get_class_doc(StringName(word));
+					if (class_doc && !class_doc->brief_description.is_empty()) {
+						hover_doc = _bbcode_to_markdown(class_doc->brief_description);
+						if (!class_doc->description.is_empty() && class_doc->description != class_doc->brief_description) {
+							hover_doc += "\n\n" + _bbcode_to_markdown(class_doc->description);
+						}
+					}
+				}
+
+				// If no class-level doc, try to find method/property/signal doc
+				// by detecting the native class context.
+				if (hover_doc.is_empty() && ident) {
+					StringName native_class;
+
+					// From identifier source: check if it references a native member.
+					if (ident->source == GDScriptParser::IdentifierNode::MEMBER_FUNCTION ||
+							ident->source == GDScriptParser::IdentifierNode::MEMBER_VARIABLE ||
+							ident->source == GDScriptParser::IdentifierNode::INHERITED_VARIABLE ||
+							ident->source == GDScriptParser::IdentifierNode::STATIC_VARIABLE ||
+							ident->source == GDScriptParser::IdentifierNode::MEMBER_SIGNAL ||
+							ident->source == GDScriptParser::IdentifierNode::MEMBER_CONSTANT) {
+						// Check the class's native base.
+						const GDScriptParser::ClassNode *cls = parser.get_tree();
+						if (cls) {
+							GDScriptParser::DataType base_type = cls->base_type;
+							if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE) {
+								native_class = base_type.native_type;
+							}
+						}
+					}
+
+					// Also try datatype's native_type directly.
+					if (native_class == StringName() && ident->datatype.is_set() &&
+							ident->datatype.kind == GDScriptParser::DataType::NATIVE) {
+						native_class = ident->datatype.native_type;
+					}
+
+					if (native_class != StringName()) {
+						// Try method doc.
+						const DocMethodData *md = db->get_method_doc(native_class, StringName(word));
+						if (md && !md->description.is_empty()) {
+							hover_doc = _bbcode_to_markdown(md->description);
+						}
+						// Try property doc.
+						if (hover_doc.is_empty()) {
+							const DocPropertyData *pd = db->get_property_doc(native_class, StringName(word));
+							if (pd && !pd->description.is_empty()) {
+								hover_doc = _bbcode_to_markdown(pd->description);
+							}
+						}
+						// Try signal doc.
+						if (hover_doc.is_empty()) {
+							const DocMethodData *sd = db->get_signal_doc(native_class, StringName(word));
+							if (sd && !sd->description.is_empty()) {
+								hover_doc = _bbcode_to_markdown(sd->description);
+							}
+						}
+						// Try constant doc.
+						if (hover_doc.is_empty()) {
+							const DocConstantData *cd = db->get_constant_doc(native_class, StringName(word));
+							if (cd && !cd->description.is_empty()) {
+								hover_doc = _bbcode_to_markdown(cd->description);
+							}
+						}
+					}
+				}
+
+				// Fallback: try all doc lookup types without a specific native class
+				// (for "base.method" patterns where we already resolved the hover_text
+				// with a "func ClassName.method" pattern).
+				if (hover_doc.is_empty() && hover_text.contains(".")) {
+					// Extract class name from "func ClassName.method(...)" or "(property) ClassName.member: ..."
+					int dot_pos = hover_text.find(".");
+					if (dot_pos != -1) {
+						// Walk backwards from dot to find class name start.
+						int cls_start = dot_pos - 1;
+						while (cls_start >= 0 && ((hover_text[cls_start] >= 'a' && hover_text[cls_start] <= 'z') ||
+								(hover_text[cls_start] >= 'A' && hover_text[cls_start] <= 'Z') ||
+								(hover_text[cls_start] >= '0' && hover_text[cls_start] <= '9') ||
+								hover_text[cls_start] == '_')) {
+							cls_start--;
+						}
+						cls_start++;
+						String cls_name = hover_text.substr(cls_start, dot_pos - cls_start);
+						if (!cls_name.is_empty() && db->class_exists(StringName(cls_name))) {
+							const DocMethodData *md = db->get_method_doc(StringName(cls_name), StringName(word));
+							if (md && !md->description.is_empty()) {
+								hover_doc = _bbcode_to_markdown(md->description);
+							}
+							if (hover_doc.is_empty()) {
+								const DocPropertyData *pd = db->get_property_doc(StringName(cls_name), StringName(word));
+								if (pd && !pd->description.is_empty()) {
+									hover_doc = _bbcode_to_markdown(pd->description);
+								}
+							}
+							if (hover_doc.is_empty()) {
+								const DocMethodData *sd = db->get_signal_doc(StringName(cls_name), StringName(word));
+								if (sd && !sd->description.is_empty()) {
+									hover_doc = _bbcode_to_markdown(sd->description);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Build Hover response with markdown content.
+	String markdown = "```gdscript\n" + hover_text + "\n```";
+	if (!hover_doc.is_empty()) {
+		markdown += "\n\n---\n\n" + hover_doc;
+	}
+
 	Dictionary contents;
 	contents["kind"] = "markdown";
-	contents["value"] = "```gdscript\n" + hover_text + "\n```";
+	contents["value"] = markdown;
 
 	Dictionary hover;
 	hover["contents"] = contents;
