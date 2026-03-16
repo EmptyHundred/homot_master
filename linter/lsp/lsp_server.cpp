@@ -2209,20 +2209,100 @@ static String _format_datatype(const GDScriptParser::DataType &p_type) {
 
 // Convert Godot BBCode-like documentation markup to Markdown.
 static String _bbcode_to_markdown(const String &p_bbcode) {
-	String md = p_bbcode;
+	// Dedent the entire text: strip the common leading whitespace from all lines.
+	// Doc XML descriptions typically have tabs on every line (e.g. \t\t\t\t),
+	// which markdown would interpret as indented code blocks.
+	String md;
+	{
+		Vector<String> lines = p_bbcode.split("\n");
+		int min_indent = INT_MAX;
+		for (int i = 0; i < lines.size(); i++) {
+			if (lines[i].strip_edges().is_empty()) continue;
+			int indent = 0;
+			while (indent < lines[i].length() && (lines[i][indent] == '\t' || lines[i][indent] == ' ')) {
+				indent++;
+			}
+			if (indent < min_indent) {
+				min_indent = indent;
+			}
+		}
+		if (min_indent == INT_MAX) {
+			min_indent = 0;
+		}
+		for (int i = 0; i < lines.size(); i++) {
+			if (i > 0) md += "\n";
+			if (lines[i].length() > min_indent) {
+				md += lines[i].substr(min_indent);
+			}
+		}
+	}
+
+	// Strip [csharp]...[/csharp] blocks entirely (keep only GDScript).
+	int pos = 0;
+	while ((pos = md.find("[csharp]", pos)) != -1) {
+		int close = md.find("[/csharp]", pos);
+		if (close == -1) break;
+		md = md.substr(0, pos) + md.substr(close + 9);
+	}
+
+	// Strip [codeblocks]/[/codeblocks] wrappers.
+	md = md.replace("[codeblocks]", "").replace("[/codeblocks]", "");
+
+	// Convert [codeblock]...[/codeblock] and [gdscript]...[/gdscript] to
+	// markdown fences, stripping common leading whitespace from the content.
+	for (const char *open_tag : { "[codeblock]", "[gdscript]" }) {
+		String close_tag = String(open_tag).replace("[", "[/");
+		int open_len = String(open_tag).length();
+		int close_len = close_tag.length();
+		pos = 0;
+		while ((pos = md.find(open_tag, pos)) != -1) {
+			int content_start = pos + open_len;
+			int close_pos = md.find(close_tag, content_start);
+			if (close_pos == -1) break;
+			String content = md.substr(content_start, close_pos - content_start);
+
+			// Dedent: find the minimum leading whitespace across non-empty lines.
+			Vector<String> lines = content.split("\n");
+			int min_indent = INT_MAX;
+			for (int i = 0; i < lines.size(); i++) {
+				if (lines[i].strip_edges().is_empty()) continue;
+				int indent = 0;
+				while (indent < lines[i].length() && (lines[i][indent] == '\t' || lines[i][indent] == ' ')) {
+					indent++;
+				}
+				if (indent < min_indent) {
+					min_indent = indent;
+				}
+			}
+			if (min_indent == INT_MAX) {
+				min_indent = 0;
+			}
+			String dedented;
+			for (int i = 0; i < lines.size(); i++) {
+				if (i > 0) dedented += "\n";
+				if (lines[i].length() > min_indent) {
+					dedented += lines[i].substr(min_indent);
+				}
+			}
+			dedented = dedented.strip_edges();
+
+			md = md.substr(0, pos) + "\n```gdscript\n" + dedented + "\n```\n" + md.substr(close_pos + close_len);
+		}
+	}
+
+	// Replace [lb]/[rb] with literal brackets before inline tag processing,
+	// but use placeholders to protect them from the generic [ handler.
+	// (These appear inside code blocks as escaped brackets.)
+	md = md.replace("[lb]", "\x01LB\x01").replace("[rb]", "\x01RB\x01");
+
 	md = md.replace("[b]", "**").replace("[/b]", "**");
 	md = md.replace("[i]", "*").replace("[/i]", "*");
 	md = md.replace("[u]", "").replace("[/u]", "");
 	md = md.replace("[code]", "`").replace("[/code]", "`");
-	md = md.replace("[codeblock]", "\n```gdscript\n").replace("[/codeblock]", "\n```\n");
-	md = md.replace("[codeblocks]", "").replace("[/codeblocks]", "");
-	md = md.replace("[gdscript]", "\n```gdscript\n").replace("[/gdscript]", "\n```\n");
-	md = md.replace("[csharp]", "\n```csharp\n").replace("[/csharp]", "\n```\n");
 	md = md.replace("[br]", "\n");
-	md = md.replace("[lb]", "[").replace("[rb]", "]");
 
 	// [url=link]text[/url] -> [text](link)
-	int pos = 0;
+	pos = 0;
 	while ((pos = md.find("[url=", pos)) != -1) {
 		int url_end = md.find("]", pos);
 		if (url_end == -1) break;
@@ -2252,8 +2332,31 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 	}
 
 	// [ClassName] -> `ClassName` (simple reference)
+	// Skip content inside markdown code fences to avoid mangling code examples.
 	pos = 0;
 	while ((pos = md.find("[", pos)) != -1) {
+		// Check if we're inside a code fence (``` block).
+		int fence_start = md.rfind("```", pos);
+		if (fence_start != -1) {
+			// Count fences before this position to determine if we're inside one.
+			int fence_count = 0;
+			int search = 0;
+			while ((search = md.find("```", search)) != -1 && search < pos) {
+				fence_count++;
+				search += 3;
+			}
+			if (fence_count % 2 == 1) {
+				// Inside a code fence - skip to end of fence.
+				int fence_end = md.find("```", pos);
+				if (fence_end != -1) {
+					pos = fence_end + 3;
+				} else {
+					pos++;
+				}
+				continue;
+			}
+		}
+
 		// Skip if already handled (markdown link, code block, etc.).
 		if (pos > 0 && md[pos - 1] == '`') {
 			pos++;
@@ -2296,6 +2399,9 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 
 		pos = end + 1;
 	}
+
+	// Restore literal brackets from placeholders.
+	md = md.replace("\x01LB\x01", "[").replace("\x01RB\x01", "]");
 
 	return md.strip_edges();
 }
