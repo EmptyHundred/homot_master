@@ -1409,6 +1409,15 @@ Dictionary Server::handle_signature_help(const Variant &p_id, const Dictionary &
 							help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
 							found_sig = true;
 						}
+					} else if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::CLASS && base_type.class_type) {
+						const GDScriptParser::ClassNode *target_cls = base_type.class_type;
+						if (target_cls->has_member(StringName(call_ctx.func_name))) {
+							const GDScriptParser::ClassNode::Member &m = target_cls->get_member(StringName(call_ctx.func_name));
+							if (m.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+								help.signatures.push_back(_sig_from_function_node(m.function));
+								found_sig = true;
+							}
+						}
 					}
 				}
 			}
@@ -1464,6 +1473,22 @@ Dictionary Server::handle_signature_help(const Variant &p_id, const Dictionary &
 			MethodInfo mi = GDScriptUtilityFunctions::get_function_info(StringName(call_ctx.func_name));
 			help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, mi));
 			found_sig = true;
+		}
+
+		// Builtin type constructors (Vector2, Color, etc.).
+		if (!found_sig) {
+			Variant::Type builtin_type = GDScriptParser::get_builtin_type(StringName(call_ctx.func_name));
+			if (builtin_type < Variant::VARIANT_MAX) {
+				List<MethodInfo> constructors;
+				Variant::get_constructor_list(builtin_type, &constructors);
+				for (const MethodInfo &ci : constructors) {
+					if (ci.arguments.size() == 0) continue; // Skip empty constructor.
+					help.signatures.push_back(_sig_from_method_info(call_ctx.func_name, ci));
+				}
+				if (help.signatures.size() > 0) {
+					found_sig = true;
+				}
+			}
 		}
 	}
 
@@ -1807,12 +1832,73 @@ static const GDScriptParser::IdentifierNode *_find_identifier_at_position(
 	return nullptr;
 }
 
+// Given a parser node's line number, determine which file it belongs to.
+// Check if the node is within the current parser's tree; if not, search
+// depended parsers (cross-file dependencies).
+static String _resolve_node_path(
+		const GDScriptParser::Node *p_node,
+		const String &p_current_path,
+		GDScriptParser &p_parser) {
+	// Check if the node is within the current parser's tree.
+	const GDScriptParser::ClassNode *current_tree = p_parser.get_tree();
+	if (current_tree && p_node->start_line >= current_tree->start_line && p_node->start_line <= current_tree->end_line) {
+		// Could be current file, but verify it's not from a dependency
+		// by checking depended parsers first (dependencies are more specific).
+	}
+
+	// Search depended parsers for the one that owns this node.
+	for (const KeyValue<String, Ref<GDScriptParserRef>> &dep : p_parser.get_depended_parsers()) {
+		if (dep.value.is_null() || dep.value->get_parser() == nullptr) {
+			continue;
+		}
+		const GDScriptParser::ClassNode *dep_tree = dep.value->get_parser()->get_tree();
+		if (!dep_tree) {
+			continue;
+		}
+		// Check if the node belongs to this dependency by checking if the node
+		// is a member (function/variable/signal/etc.) of the dependency's class.
+		for (int i = 0; i < dep_tree->members.size(); i++) {
+			const GDScriptParser::ClassNode::Member &member = dep_tree->members[i];
+			bool match = false;
+			switch (member.type) {
+				case GDScriptParser::ClassNode::Member::FUNCTION:
+					match = (member.function == p_node);
+					break;
+				case GDScriptParser::ClassNode::Member::VARIABLE:
+					match = (member.variable == p_node);
+					break;
+				case GDScriptParser::ClassNode::Member::CONSTANT:
+					match = (member.constant == p_node);
+					break;
+				case GDScriptParser::ClassNode::Member::SIGNAL:
+					match = (member.signal == p_node);
+					break;
+				case GDScriptParser::ClassNode::Member::CLASS:
+					match = (member.m_class == p_node);
+					break;
+				default:
+					break;
+			}
+			if (match) {
+				return dep.key;
+			}
+		}
+		// Also check if the node IS the dependency's class itself.
+		if (dep_tree == p_node) {
+			return dep.key;
+		}
+	}
+
+	return p_current_path;
+}
+
 // Resolve an IdentifierNode's definition location. Returns false if no location.
 static bool _resolve_identifier_location(
 		const GDScriptParser::IdentifierNode *p_id,
 		const String &p_current_path,
 		const HashMap<String, String> &p_class_to_path,
-		String &r_path, int &r_line, int &r_col) {
+		String &r_path, int &r_line, int &r_col,
+		GDScriptParser *p_parser = nullptr) {
 
 	switch (p_id->source) {
 		case GDScriptParser::IdentifierNode::FUNCTION_PARAMETER: {
@@ -1824,20 +1910,44 @@ static bool _resolve_identifier_location(
 			}
 		} break;
 		case GDScriptParser::IdentifierNode::LOCAL_VARIABLE:
+		case GDScriptParser::IdentifierNode::LOCAL_CONSTANT:
+		case GDScriptParser::IdentifierNode::LOCAL_ITERATOR:
+		case GDScriptParser::IdentifierNode::LOCAL_BIND: {
+			const GDScriptParser::Node *src = nullptr;
+			switch (p_id->source) {
+				case GDScriptParser::IdentifierNode::LOCAL_VARIABLE:
+					src = p_id->variable_source;
+					break;
+				case GDScriptParser::IdentifierNode::LOCAL_CONSTANT:
+					src = p_id->constant_source;
+					break;
+				case GDScriptParser::IdentifierNode::LOCAL_ITERATOR:
+				case GDScriptParser::IdentifierNode::LOCAL_BIND:
+					src = p_id->bind_source;
+					break;
+				default:
+					break;
+			}
+			if (src) {
+				r_path = p_current_path;
+				r_line = src->start_line;
+				r_col = src->start_column;
+				return true;
+			}
+		} break;
 		case GDScriptParser::IdentifierNode::MEMBER_VARIABLE:
 		case GDScriptParser::IdentifierNode::INHERITED_VARIABLE:
 		case GDScriptParser::IdentifierNode::STATIC_VARIABLE: {
 			if (p_id->variable_source) {
-				r_path = p_current_path;
+				r_path = p_parser ? _resolve_node_path(p_id->variable_source, p_current_path, *p_parser) : p_current_path;
 				r_line = p_id->variable_source->start_line;
 				r_col = p_id->variable_source->start_column;
 				return true;
 			}
 		} break;
-		case GDScriptParser::IdentifierNode::LOCAL_CONSTANT:
 		case GDScriptParser::IdentifierNode::MEMBER_CONSTANT: {
 			if (p_id->constant_source) {
-				r_path = p_current_path;
+				r_path = p_parser ? _resolve_node_path(p_id->constant_source, p_current_path, *p_parser) : p_current_path;
 				r_line = p_id->constant_source->start_line;
 				r_col = p_id->constant_source->start_column;
 				return true;
@@ -1845,7 +1955,7 @@ static bool _resolve_identifier_location(
 		} break;
 		case GDScriptParser::IdentifierNode::MEMBER_FUNCTION: {
 			if (p_id->function_source) {
-				r_path = p_current_path;
+				r_path = p_parser ? _resolve_node_path(p_id->function_source, p_current_path, *p_parser) : p_current_path;
 				r_line = p_id->function_source->start_line;
 				r_col = p_id->function_source->start_column;
 				return true;
@@ -1853,32 +1963,21 @@ static bool _resolve_identifier_location(
 		} break;
 		case GDScriptParser::IdentifierNode::MEMBER_SIGNAL: {
 			if (p_id->signal_source) {
-				r_path = p_current_path;
+				r_path = p_parser ? _resolve_node_path(p_id->signal_source, p_current_path, *p_parser) : p_current_path;
 				r_line = p_id->signal_source->start_line;
 				r_col = p_id->signal_source->start_column;
 				return true;
 			}
 		} break;
 		case GDScriptParser::IdentifierNode::MEMBER_CLASS: {
-			// Inner class — the identifier's datatype should have the class_type.
 			if (p_id->datatype.kind == GDScriptParser::DataType::CLASS && p_id->datatype.class_type) {
-				r_path = p_current_path;
+				r_path = p_parser ? _resolve_node_path(p_id->datatype.class_type, p_current_path, *p_parser) : p_current_path;
 				r_line = p_id->datatype.class_type->start_line;
 				r_col = p_id->datatype.class_type->start_column;
 				return true;
 			}
 		} break;
-		case GDScriptParser::IdentifierNode::LOCAL_ITERATOR:
-		case GDScriptParser::IdentifierNode::LOCAL_BIND: {
-			if (p_id->bind_source) {
-				r_path = p_current_path;
-				r_line = p_id->bind_source->start_line;
-				r_col = p_id->bind_source->start_column;
-				return true;
-			}
-		} break;
 		case GDScriptParser::IdentifierNode::NATIVE_CLASS: {
-			// No source location for native classes.
 			return false;
 		} break;
 		default:
@@ -2007,9 +2106,22 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 
 	if (ident) {
 		// Try analyzer-resolved location first, then class member search.
-		if (!_resolve_identifier_location(ident, file_path, class_to_path, def_path, def_line, def_col)) {
+		if (!_resolve_identifier_location(ident, file_path, class_to_path, def_path, def_line, def_col, &parser)) {
 			if (!_find_member_definition_in_class(parser.get_tree(), ident->name, file_path, def_path, def_line, def_col)) {
-				ident = nullptr; // Fall through to text-based lookup.
+				// Search depended parsers (cross-file classes).
+				bool found_in_dep = false;
+				for (const KeyValue<String, Ref<GDScriptParserRef>> &dep : parser.get_depended_parsers()) {
+					if (dep.value.is_null() || dep.value->get_parser() == nullptr) {
+						continue;
+					}
+					if (_find_member_definition_in_class(dep.value->get_parser()->get_tree(), ident->name, dep.key, def_path, def_line, def_col)) {
+						found_in_dep = true;
+						break;
+					}
+				}
+				if (!found_in_dep) {
+					ident = nullptr; // Fall through to text-based lookup.
+				}
 			}
 		}
 	}
@@ -2256,9 +2368,88 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 									MethodInfo mi = Variant::get_builtin_method_info(base_type.builtin_type, StringName(word));
 									hover_text = "func " + Variant::get_type_name(base_type.builtin_type) + "." + word + _method_signature(mi);
 								}
+							} else if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::CLASS && base_type.class_type) {
+								const GDScriptParser::ClassNode *target_cls = base_type.class_type;
+								if (target_cls->has_member(StringName(word))) {
+									const GDScriptParser::ClassNode::Member &m = target_cls->get_member(StringName(word));
+									if (m.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+										const GDScriptParser::FunctionNode *fn = m.function;
+										String sig = "func " + word + "(";
+										for (int k = 0; k < fn->parameters.size(); k++) {
+											if (k > 0) sig += ", ";
+											sig += fn->parameters[k]->identifier->name;
+											GDScriptParser::DataType pt = fn->parameters[k]->get_datatype();
+											if (pt.is_set() && !pt.is_variant()) {
+												sig += ": " + pt.to_string();
+											}
+										}
+										sig += ")";
+										GDScriptParser::DataType rt = fn->get_datatype();
+										if (rt.is_set() && !rt.is_variant()) {
+											sig += " -> " + rt.to_string();
+										}
+										hover_text = sig;
+									} else if (m.type == GDScriptParser::ClassNode::Member::VARIABLE) {
+										GDScriptParser::DataType vt = m.variable->get_datatype();
+										hover_text = "(property) " + word + ": " + (vt.is_set() ? vt.to_string() : "Variant");
+									}
+								}
 							}
 						}
 					}
+				}
+			}
+		}
+	}
+
+	// Fallback for bare function calls (e.g. dynfunc(500)) where the identifier
+	// source is unresolved. Check the current class and native inheritance chain.
+	if (ident && (hover_text.is_empty() || hover_text == String(ident->name))) {
+		String word = String(ident->name);
+		const GDScriptParser::ClassNode *cls = parser.get_tree();
+
+		// Check current class members.
+		if (cls && cls->has_member(StringName(word))) {
+			const GDScriptParser::ClassNode::Member &m = cls->get_member(StringName(word));
+			if (m.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+				const GDScriptParser::FunctionNode *fn = m.function;
+				String sig = "func " + word + "(";
+				for (int i = 0; i < fn->parameters.size(); i++) {
+					if (i > 0) sig += ", ";
+					sig += fn->parameters[i]->identifier->name;
+					GDScriptParser::DataType pt = fn->parameters[i]->get_datatype();
+					if (pt.is_set() && !pt.is_variant()) {
+						sig += ": " + pt.to_string();
+					}
+				}
+				sig += ")";
+				GDScriptParser::DataType rt = fn->get_datatype();
+				if (rt.is_set() && !rt.is_variant()) {
+					sig += " -> " + rt.to_string();
+				}
+				hover_text = sig;
+			} else if (m.type == GDScriptParser::ClassNode::Member::VARIABLE) {
+				GDScriptParser::DataType vt = m.variable->get_datatype();
+				hover_text = "(property) " + word + ": " + (vt.is_set() ? vt.to_string() : "Variant");
+			} else if (m.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+				hover_text = "(signal) " + word;
+			}
+		}
+
+		// Check native base methods.
+		if ((hover_text.is_empty() || hover_text == word) && cls) {
+			LinterDB *db = LinterDB::get_singleton();
+			if (db) {
+				GDScriptParser::DataType base_type = cls->base_type;
+				while (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE) {
+					MethodInfo mi;
+					if (db->get_method_info(base_type.native_type, StringName(word), &mi)) {
+						hover_text = "func " + String(base_type.native_type) + "." + word + _method_signature(mi);
+						break;
+					}
+					StringName parent = db->get_parent_class(base_type.native_type);
+					if (parent == StringName() || parent == base_type.native_type) break;
+					base_type.native_type = parent;
 				}
 			}
 		}
