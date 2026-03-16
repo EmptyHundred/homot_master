@@ -384,6 +384,21 @@ Error LinterDB::load_from_json(const String &p_path) {
 		}
 	}
 
+	// Load built-in type documentation (int, float, Vector2, etc.).
+	{
+		Dictionary builtin_dict = root.get("builtin_types", Dictionary());
+		LocalVector<Variant> builtin_keys = builtin_dict.get_key_list();
+		for (const Variant &key : builtin_keys) {
+			String type_name = key;
+			Dictionary bt = builtin_dict[key];
+			if (bt.has("doc")) {
+				DocClassData doc;
+				_parse_doc_class(bt["doc"], doc);
+				builtin_type_docs[type_name] = doc;
+			}
+		}
+	}
+
 	return OK;
 }
 
@@ -767,6 +782,14 @@ const DocClassData *LinterDB::get_class_doc(const StringName &p_class) const {
 	const ClassData *cd = get_class_data(p_class);
 	if (cd && (!cd->doc.brief_description.is_empty() || !cd->doc.description.is_empty())) {
 		return &cd->doc;
+	}
+	return nullptr;
+}
+
+const DocClassData *LinterDB::get_builtin_type_doc(const String &p_type) const {
+	auto it = builtin_type_docs.find(p_type);
+	if (it && (!it->value.brief_description.is_empty() || !it->value.description.is_empty())) {
+		return &it->value;
 	}
 	return nullptr;
 }

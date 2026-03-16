@@ -163,6 +163,9 @@ class LinterDB {
 	HashMap<StringName, ClassData> classes;
 	HashSet<StringName> singletons;
 
+	// Documentation for built-in Variant types (int, float, Vector2, etc.).
+	HashMap<String, DocClassData> builtin_type_docs;
+
 public:
 	static LinterDB *get_singleton() { return singleton; }
 
@@ -202,6 +205,7 @@ public:
 
 	// Documentation queries.
 	const DocClassData *get_class_doc(const StringName &p_class) const;
+	const DocClassData *get_builtin_type_doc(const String &p_type) const;
 	// Walks inheritance to find method doc.
 	const DocMethodData *get_method_doc(const StringName &p_class, const StringName &p_method) const;
 	const DocPropertyData *get_property_doc(const StringName &p_class, const StringName &p_property) const;

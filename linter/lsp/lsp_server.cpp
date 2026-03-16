@@ -692,6 +692,35 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 				}
 			}
 
+			// 6b. Variant built-in type constructors (Vector2, Color, etc.).
+			if (!methods_only) {
+				for (int i = 1; i < Variant::VARIANT_MAX; i++) {
+					Variant::Type vt = (Variant::Type)i;
+					String type_name = Variant::get_type_name(vt);
+					if (Variant::get_constructor_count(vt) > 0) {
+						CompletionItem item;
+						item.label = type_name;
+						item.kind = COMPLETION_KIND_CONSTRUCTOR;
+						// Build detail from the first non-default constructor.
+						for (int j = 0; j < Variant::get_constructor_count(vt); j++) {
+							int argc = Variant::get_constructor_argument_count(vt, j);
+							if (argc > 0) {
+								String sig = "(";
+								for (int k = 0; k < argc; k++) {
+									if (k > 0) sig += ", ";
+									sig += Variant::get_constructor_argument_name(vt, j, k);
+									sig += ": " + Variant::get_type_name(Variant::get_constructor_argument_type(vt, j, k));
+								}
+								sig += ")";
+								item.detail = sig;
+								break;
+							}
+						}
+						r_items.push_back(item.to_dict());
+					}
+				}
+			}
+
 			// 7. Utility functions.
 			{
 				List<StringName> utility_funcs;
@@ -2192,8 +2221,29 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 	md = md.replace("[br]", "\n");
 	md = md.replace("[lb]", "[").replace("[rb]", "]");
 
-	// [param name] -> `name`
+	// [url=link]text[/url] -> [text](link)
 	int pos = 0;
+	while ((pos = md.find("[url=", pos)) != -1) {
+		int url_end = md.find("]", pos);
+		if (url_end == -1) break;
+		String url = md.substr(pos + 5, url_end - pos - 5);
+		int close = md.find("[/url]", url_end);
+		if (close == -1) break;
+		String text = md.substr(url_end + 1, close - url_end - 1);
+		md = md.substr(0, pos) + "[" + text + "](" + url + ")" + md.substr(close + 6);
+	}
+
+	// [url]link[/url] -> link
+	pos = 0;
+	while ((pos = md.find("[url]", pos)) != -1) {
+		int close = md.find("[/url]", pos);
+		if (close == -1) break;
+		String url = md.substr(pos + 5, close - pos - 5);
+		md = md.substr(0, pos) + url + md.substr(close + 6);
+	}
+
+	// [param name] -> `name`
+	pos = 0;
 	while ((pos = md.find("[param ", pos)) != -1) {
 		int end = md.find("]", pos);
 		if (end == -1) break;
@@ -2211,11 +2261,17 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 		}
 		int end = md.find("]", pos);
 		if (end == -1) break;
+
+		// Skip markdown links [text](url) produced by earlier url conversion.
+		if (end + 1 < md.length() && md[end + 1] == '(') {
+			pos = end + 1;
+			continue;
+		}
+
 		String inner = md.substr(pos + 1, end - pos - 1);
 
-		// Skip [url] and other complex tags.
-		if (inner.begins_with("url") || inner.begins_with("/url") ||
-				inner.begins_with("color") || inner.begins_with("/color") ||
+		// Skip complex tags that are handled elsewhere or unsupported.
+		if (inner.begins_with("color") || inner.begins_with("/color") ||
 				inner.begins_with("img") || inner.begins_with("/img")) {
 			pos = end + 1;
 			continue;
@@ -2577,6 +2633,17 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 					}
 				}
 
+				// Check if this is a built-in Variant type (int, float, Vector2, etc.).
+				if (hover_doc.is_empty()) {
+					const DocClassData *bt_doc = db->get_builtin_type_doc(word);
+					if (bt_doc && !bt_doc->brief_description.is_empty()) {
+						hover_doc = _bbcode_to_markdown(bt_doc->brief_description);
+						if (!bt_doc->description.is_empty() && bt_doc->description != bt_doc->brief_description) {
+							hover_doc += "\n\n" + _bbcode_to_markdown(bt_doc->description);
+						}
+					}
+				}
+
 				// If no class-level doc, try to find method/property/signal doc
 				// by detecting the native class context.
 				if (hover_doc.is_empty() && ident) {
@@ -2667,6 +2734,28 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 								const DocMethodData *sd = db->get_signal_doc(StringName(cls_name), StringName(word));
 								if (sd && !sd->description.is_empty()) {
 									hover_doc = _bbcode_to_markdown(sd->description);
+								}
+							}
+						}
+						// Check built-in type docs (Vector2.normalized, int.sign, etc.).
+						if (hover_doc.is_empty() && !cls_name.is_empty()) {
+							const DocClassData *bt_doc = db->get_builtin_type_doc(cls_name);
+							if (bt_doc) {
+								const DocMethodData *md = bt_doc->find_method(word);
+								if (md && !md->description.is_empty()) {
+									hover_doc = _bbcode_to_markdown(md->description);
+								}
+								if (hover_doc.is_empty()) {
+									const DocPropertyData *pd = bt_doc->find_property(word);
+									if (pd && !pd->description.is_empty()) {
+										hover_doc = _bbcode_to_markdown(pd->description);
+									}
+								}
+								if (hover_doc.is_empty()) {
+									const DocConstantData *cd = bt_doc->find_constant(word);
+									if (cd && !cd->description.is_empty()) {
+										hover_doc = _bbcode_to_markdown(cd->description);
+									}
 								}
 							}
 						}
