@@ -2579,6 +2579,17 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 				}
 			}
 		}
+
+		// Check utility functions (cos, sin, str, etc.).
+		if (hover_text.is_empty() || hover_text == word) {
+			if (Variant::has_utility_function(StringName(word))) {
+				MethodInfo mi = Variant::get_utility_function_info(StringName(word));
+				hover_text = "func " + word + _method_signature(mi);
+			} else if (GDScriptUtilityFunctions::function_exists(StringName(word))) {
+				MethodInfo mi = GDScriptUtilityFunctions::get_function_info(StringName(word));
+				hover_text = "func " + word + _method_signature(mi);
+			}
+		}
 	}
 
 	// Text-based fallback for global class names, native classes, and built-in types
@@ -2641,6 +2652,14 @@ Dictionary Server::handle_hover(const Variant &p_id, const Dictionary &p_params)
 						if (!bt_doc->description.is_empty() && bt_doc->description != bt_doc->brief_description) {
 							hover_doc += "\n\n" + _bbcode_to_markdown(bt_doc->description);
 						}
+					}
+				}
+
+				// Check utility functions (@GlobalScope, @GDScript).
+				if (hover_doc.is_empty()) {
+					const DocMethodData *umd = db->get_utility_function_doc(StringName(word));
+					if (umd && !umd->description.is_empty()) {
+						hover_doc = _bbcode_to_markdown(umd->description);
 					}
 				}
 

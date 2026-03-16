@@ -399,6 +399,18 @@ Error LinterDB::load_from_json(const String &p_path) {
 		}
 	}
 
+	// Load special doc classes (@GlobalScope, @GDScript, etc.).
+	{
+		Dictionary doc_dict = root.get("doc_classes", Dictionary());
+		LocalVector<Variant> doc_keys = doc_dict.get_key_list();
+		for (const Variant &key : doc_keys) {
+			String cls_name = key;
+			DocClassData doc;
+			_parse_doc_class(doc_dict[key], doc);
+			doc_classes[cls_name] = doc;
+		}
+	}
+
 	return OK;
 }
 
@@ -790,6 +802,17 @@ const DocClassData *LinterDB::get_builtin_type_doc(const String &p_type) const {
 	auto it = builtin_type_docs.find(p_type);
 	if (it && (!it->value.brief_description.is_empty() || !it->value.description.is_empty())) {
 		return &it->value;
+	}
+	return nullptr;
+}
+
+const DocMethodData *LinterDB::get_utility_function_doc(const StringName &p_name) const {
+	// Search all doc classes (@GlobalScope, @GDScript, etc.) for the function.
+	for (const KeyValue<String, DocClassData> &kv : doc_classes) {
+		const DocMethodData *md = kv.value.find_method(String(p_name));
+		if (md) {
+			return md;
+		}
 	}
 	return nullptr;
 }
