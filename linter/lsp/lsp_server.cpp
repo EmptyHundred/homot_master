@@ -2423,9 +2423,12 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 										}
 									}
 
-									// Static call on a native class name (e.g. Node.create).
+									// Native class name (e.g. Node.NOTIFICATION_EXIT_TREE, Node.create).
 									if (symbol.is_empty() && db && db->class_exists(StringName(base_name))) {
-										if (db->has_method(StringName(base_name), StringName(word))) {
+										if (db->has_method(StringName(base_name), StringName(word)) ||
+												db->has_integer_constant(StringName(base_name), StringName(word)) ||
+												db->has_property(StringName(base_name), StringName(word)) ||
+												db->has_signal(StringName(base_name), StringName(word))) {
 											symbol = base_name;
 											member = word;
 										}
