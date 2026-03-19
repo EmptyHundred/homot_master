@@ -877,35 +877,9 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 				// Builtin type (Vector2, Color, etc.) — query Variant API.
 				Variant::Type vt = base_dt.builtin_type;
 
-				// Methods.
-				{
-					List<StringName> methods;
-					Variant::get_builtin_method_list(vt, &methods);
-					for (const StringName &m : methods) {
-						CompletionItem item;
-						item.label = m;
-						item.kind = COMPLETION_KIND_METHOD;
-						MethodInfo mi = Variant::get_builtin_method_info(vt, m);
-						item.detail = _method_signature(mi);
-						r_items.push_back(item.to_dict());
-					}
-				}
-
-				if (!methods_only) {
-					// Members (x, y, z, r, g, b, etc.).
-					{
-						List<StringName> members;
-						Variant::get_member_list(vt, &members);
-						for (const StringName &m : members) {
-							CompletionItem item;
-							item.label = m;
-							item.kind = COMPLETION_KIND_FIELD;
-							r_items.push_back(item.to_dict());
-						}
-					}
-
-					// Constants.
-					{
+				if (base_dt.is_meta_type) {
+					// Meta-type access (e.g. Vector3.) — only constants are valid.
+					if (!methods_only) {
 						List<StringName> constants;
 						Variant::get_constants_for_type(vt, &constants);
 						for (const StringName &c : constants) {
@@ -913,6 +887,36 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 							item.label = c;
 							item.kind = COMPLETION_KIND_CONSTANT;
 							r_items.push_back(item.to_dict());
+						}
+					}
+				} else {
+					// Instance access (e.g. my_vec.) — methods and members, no constants.
+
+					// Methods.
+					{
+						List<StringName> methods;
+						Variant::get_builtin_method_list(vt, &methods);
+						for (const StringName &m : methods) {
+							CompletionItem item;
+							item.label = m;
+							item.kind = COMPLETION_KIND_METHOD;
+							MethodInfo mi = Variant::get_builtin_method_info(vt, m);
+							item.detail = _method_signature(mi);
+							r_items.push_back(item.to_dict());
+						}
+					}
+
+					if (!methods_only) {
+						// Members (x, y, z, r, g, b, etc.).
+						{
+							List<StringName> members;
+							Variant::get_member_list(vt, &members);
+							for (const StringName &m : members) {
+								CompletionItem item;
+								item.label = m;
+								item.kind = COMPLETION_KIND_FIELD;
+								r_items.push_back(item.to_dict());
+							}
 						}
 					}
 				}
@@ -989,6 +993,7 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 					}
 				}
 			}
+
 		} break;
 
 		case GDScriptParser::COMPLETION_ANNOTATION: {
@@ -1086,6 +1091,38 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 				StringName parent = db->get_parent_class(native_class);
 				if (parent == StringName() || parent == native_class) break;
 				base_type.native_type = parent;
+			}
+		} break;
+
+		case GDScriptParser::COMPLETION_BUILT_IN_TYPE_CONSTANT_OR_STATIC_METHOD: {
+			Variant::Type vt = ctx.builtin_type;
+
+			// Constants (e.g. Vector3.UP, Color.RED).
+			{
+				List<StringName> constants;
+				Variant::get_constants_for_type(vt, &constants);
+				for (const StringName &c : constants) {
+					CompletionItem item;
+					item.label = c;
+					item.kind = COMPLETION_KIND_CONSTANT;
+					r_items.push_back(item.to_dict());
+				}
+			}
+
+			// Static methods only.
+			{
+				List<StringName> methods;
+				Variant::get_builtin_method_list(vt, &methods);
+				for (const StringName &m : methods) {
+					if (Variant::is_builtin_method_static(vt, m)) {
+						CompletionItem item;
+						item.label = m;
+						item.kind = COMPLETION_KIND_METHOD;
+						MethodInfo mi = Variant::get_builtin_method_info(vt, m);
+						item.detail = _method_signature(mi);
+						r_items.push_back(item.to_dict());
+					}
+				}
 			}
 		} break;
 
@@ -2367,9 +2404,22 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 									// Built-in type method (Array.append, Vector2.normalized, etc.).
 									if (symbol.is_empty() && base_type.is_set() && base_type.kind == GDScriptParser::DataType::BUILTIN) {
 										String type_name = Variant::get_type_name(base_type.builtin_type);
-										if (Variant::has_builtin_method(base_type.builtin_type, StringName(word))) {
+										if (Variant::has_builtin_method(base_type.builtin_type, StringName(word)) ||
+												Variant::has_constant(base_type.builtin_type, StringName(word))) {
 											symbol = type_name;
 											member = word;
+										}
+									}
+
+									// Builtin type name used directly (e.g. Vector3.UP, Color.html).
+									if (symbol.is_empty()) {
+										Variant::Type vt = GDScriptParser::get_builtin_type(StringName(base_name));
+										if (vt != Variant::NIL && vt < Variant::VARIANT_MAX) {
+											if (Variant::has_constant(vt, StringName(word)) ||
+													Variant::has_builtin_method(vt, StringName(word))) {
+												symbol = Variant::get_type_name(vt);
+												member = word;
+											}
 										}
 									}
 
