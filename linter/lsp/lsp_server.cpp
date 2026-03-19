@@ -2266,6 +2266,125 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 						}
 					}
 
+					// Check for attribute access on a typed variable (e.g. arr.append).
+					// Detect "base.method" pattern via source text, then resolve the
+					// base variable's type from the AST.
+					if (symbol.is_empty()) {
+						String word = String(ident->name);
+						Vector<String> src_lines = source.split("\n");
+						if (line < src_lines.size()) {
+							String line_text = src_lines[line];
+							// Find where the word starts on this line.
+							int word_start = character;
+							while (word_start > 0 && ((line_text[word_start - 1] >= 'a' && line_text[word_start - 1] <= 'z') ||
+									(line_text[word_start - 1] >= 'A' && line_text[word_start - 1] <= 'Z') ||
+									(line_text[word_start - 1] >= '0' && line_text[word_start - 1] <= '9') ||
+									line_text[word_start - 1] == '_')) {
+								word_start--;
+							}
+							// Look for a dot before the word.
+							int dot_pos = word_start - 1;
+							while (dot_pos >= 0 && line_text[dot_pos] == ' ') {
+								dot_pos--;
+							}
+							if (dot_pos >= 0 && line_text[dot_pos] == '.') {
+								// Extract the base identifier.
+								int base_end = dot_pos - 1;
+								while (base_end >= 0 && line_text[base_end] == ' ') {
+									base_end--;
+								}
+								int base_start = base_end;
+								while (base_start >= 0 && ((line_text[base_start] >= 'a' && line_text[base_start] <= 'z') ||
+										(line_text[base_start] >= 'A' && line_text[base_start] <= 'Z') ||
+										(line_text[base_start] >= '0' && line_text[base_start] <= '9') ||
+										line_text[base_start] == '_')) {
+									base_start--;
+								}
+								base_start++;
+								if (base_start <= base_end) {
+									String base_name = line_text.substr(base_start, base_end - base_start + 1);
+
+									// Resolve base type from AST.
+									GDScriptParser::DataType base_type;
+									const GDScriptParser::ClassNode *cls = parser.get_tree();
+
+									// Check class members.
+									if (cls && cls->has_member(StringName(base_name))) {
+										const GDScriptParser::ClassNode::Member &m = cls->get_member(StringName(base_name));
+										if (m.type == GDScriptParser::ClassNode::Member::VARIABLE) {
+											base_type = m.variable->get_datatype();
+										}
+									}
+
+									// Check function parameters and locals.
+									if (!base_type.is_set() && cls) {
+										for (int i = 0; i < cls->members.size(); i++) {
+											if (base_type.is_set()) break;
+											const GDScriptParser::ClassNode::Member &m = cls->members[i];
+											if (m.type != GDScriptParser::ClassNode::Member::FUNCTION) continue;
+											const GDScriptParser::FunctionNode *func = m.function;
+											if (parser_line < func->start_line || parser_line > func->end_line) continue;
+											for (int j = 0; j < func->parameters.size(); j++) {
+												if (func->parameters[j]->identifier->name == StringName(base_name)) {
+													base_type = func->parameters[j]->get_datatype();
+													break;
+												}
+											}
+											if (!base_type.is_set() && func->body) {
+												const GDScriptParser::SuiteNode *suite = func->body;
+												while (suite && !base_type.is_set()) {
+													for (int j = 0; j < suite->locals.size(); j++) {
+														if (suite->locals[j].name == StringName(base_name)) {
+															base_type = suite->locals[j].get_datatype();
+															break;
+														}
+													}
+													suite = suite->parent_block;
+												}
+											}
+										}
+									}
+
+									LinterDB *db = LinterDB::get_singleton();
+
+									// Native class method/property/signal.
+									if (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE && db) {
+										StringName check = base_type.native_type;
+										while (check != StringName()) {
+											if (db->has_method(check, StringName(word), true) ||
+													db->has_property(check, StringName(word), true) ||
+													db->has_signal(check, StringName(word), true)) {
+												symbol = check;
+												member = word;
+												break;
+											}
+											StringName parent = db->get_parent_class(check);
+											if (parent == StringName() || parent == check) break;
+											check = parent;
+										}
+									}
+
+									// Built-in type method (Array.append, Vector2.normalized, etc.).
+									if (symbol.is_empty() && base_type.is_set() && base_type.kind == GDScriptParser::DataType::BUILTIN) {
+										String type_name = Variant::get_type_name(base_type.builtin_type);
+										if (Variant::has_builtin_method(base_type.builtin_type, StringName(word))) {
+											symbol = type_name;
+											member = word;
+										}
+									}
+
+									// Static call on a native class name (e.g. Node.create).
+									if (symbol.is_empty() && db && db->class_exists(StringName(base_name))) {
+										if (db->has_method(StringName(base_name), StringName(word))) {
+											symbol = base_name;
+											member = word;
+										}
+									}
+								}
+							}
+						}
+					}
+
 					if (!symbol.is_empty()) {
 						String doc_path = get_or_create_doc_file(symbol);
 						if (!doc_path.is_empty()) {
