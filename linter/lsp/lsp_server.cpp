@@ -23,6 +23,7 @@
 
 using linter::DocClassData;
 using linter::DocConstantData;
+using linter::DocEnumData;
 using linter::DocMethodData;
 using linter::DocPropertyData;
 using linter::DocTutorialData;
@@ -1723,6 +1724,13 @@ static const GDScriptParser::IdentifierNode *_find_identifier_in_suite(
 		switch (stmt->type) {
 			case GDScriptParser::Node::VARIABLE: {
 				auto *var = static_cast<const GDScriptParser::VariableNode *>(stmt);
+				if (var->datatype_specifier && _node_contains_position(var->datatype_specifier, p_line, p_col)) {
+					for (int ti = 0; ti < var->datatype_specifier->type_chain.size(); ti++) {
+						if (_node_contains_position(var->datatype_specifier->type_chain[ti], p_line, p_col)) {
+							return var->datatype_specifier->type_chain[ti];
+						}
+					}
+				}
 				if (var->initializer) {
 					auto *found = _find_identifier_in_expression(var->initializer, p_line, p_col);
 					if (found) return found;
@@ -1879,16 +1887,49 @@ static const GDScriptParser::IdentifierNode *_find_identifier_at_position(
 		switch (member.type) {
 			case GDScriptParser::ClassNode::Member::FUNCTION: {
 				const GDScriptParser::FunctionNode *func = member.function;
-				if (!func->body) continue;
 				if (!_node_contains_position(func, p_line, p_col)) continue;
-				auto *found = _find_identifier_in_suite(func->body, p_line, p_col);
-				if (found) return found;
+				// Check parameter type annotations.
+				for (int pi = 0; pi < func->parameters.size(); pi++) {
+					const GDScriptParser::ParameterNode *param = func->parameters[pi];
+					if (param->datatype_specifier && _node_contains_position(param->datatype_specifier, p_line, p_col)) {
+						for (int ti = 0; ti < param->datatype_specifier->type_chain.size(); ti++) {
+							if (_node_contains_position(param->datatype_specifier->type_chain[ti], p_line, p_col)) {
+								return param->datatype_specifier->type_chain[ti];
+							}
+						}
+					}
+				}
+				// Check return type annotation.
+				if (func->return_type) {
+					if (_node_contains_position(func->return_type, p_line, p_col)) {
+						for (int ti = 0; ti < func->return_type->type_chain.size(); ti++) {
+							if (_node_contains_position(func->return_type->type_chain[ti], p_line, p_col)) {
+								return func->return_type->type_chain[ti];
+							}
+						}
+					}
+				}
+				// Check function body.
+				if (func->body) {
+					auto *found = _find_identifier_in_suite(func->body, p_line, p_col);
+					if (found) return found;
+				}
 			} break;
 			case GDScriptParser::ClassNode::Member::VARIABLE: {
 				const GDScriptParser::VariableNode *var = member.variable;
-				if (var->initializer && _node_contains_position(var, p_line, p_col)) {
-					auto *found = _find_identifier_in_expression(var->initializer, p_line, p_col);
-					if (found) return found;
+				if (_node_contains_position(var, p_line, p_col)) {
+					// Check type annotation.
+					if (var->datatype_specifier && _node_contains_position(var->datatype_specifier, p_line, p_col)) {
+						for (int ti = 0; ti < var->datatype_specifier->type_chain.size(); ti++) {
+							if (_node_contains_position(var->datatype_specifier->type_chain[ti], p_line, p_col)) {
+								return var->datatype_specifier->type_chain[ti];
+							}
+						}
+					}
+					if (var->initializer) {
+						auto *found = _find_identifier_in_expression(var->initializer, p_line, p_col);
+						if (found) return found;
+					}
 				}
 			} break;
 			case GDScriptParser::ClassNode::Member::CLASS: {
@@ -2204,11 +2245,12 @@ int Server::find_doc_line(const String &p_file_path, const String &p_member) {
 	if (p_member.is_empty()) return 0;
 	Ref<FileAccess> f = FileAccess::open(p_file_path, FileAccess::READ);
 	if (f.is_null()) return 0;
-	String target = "### " + p_member;
+	String heading_target = "### " + p_member;
+	String list_target = "- **" + p_member + "**";
 	int line = 0;
 	while (!f->eof_reached()) {
-		String l = f->get_line();
-		if (l.strip_edges().begins_with(target)) {
+		String l = f->get_line().strip_edges();
+		if (l.begins_with(heading_target) || l.begins_with(list_target)) {
 			return line;
 		}
 		line++;
@@ -2427,10 +2469,96 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 									if (symbol.is_empty() && db && db->class_exists(StringName(base_name))) {
 										if (db->has_method(StringName(base_name), StringName(word)) ||
 												db->has_integer_constant(StringName(base_name), StringName(word)) ||
+												db->has_enum(StringName(base_name), StringName(word)) ||
 												db->has_property(StringName(base_name), StringName(word)) ||
 												db->has_signal(StringName(base_name), StringName(word))) {
 											symbol = base_name;
 											member = word;
+										}
+									}
+
+									// Script enum member (e.g. GameState.GAME_OVER).
+									// Search current class and depended parsers for the enum.
+									if (symbol.is_empty()) {
+										// Add depended parser classes.
+										Vector<const GDScriptParser::ClassNode *> dep_classes;
+										Vector<String> dep_paths;
+										for (const KeyValue<String, Ref<GDScriptParserRef>> &dep : parser.get_depended_parsers()) {
+											if (dep.value.is_null() || dep.value->get_parser() == nullptr) continue;
+											dep_classes.push_back(dep.value->get_parser()->get_tree());
+											dep_paths.push_back(dep.key);
+										}
+
+										bool found_enum = false;
+										// Search current class first.
+										for (int si = 0; si < 1 + dep_classes.size() && !found_enum; si++) {
+											const GDScriptParser::ClassNode *search_cls = (si == 0) ? cls : dep_classes[si - 1];
+											String search_path = (si == 0) ? file_path : dep_paths[si - 1];
+											if (!search_cls) continue;
+											for (int i = 0; i < search_cls->members.size(); i++) {
+												const GDScriptParser::ClassNode::Member &m = search_cls->members[i];
+												if (m.type == GDScriptParser::ClassNode::Member::ENUM && m.m_enum->identifier->name == StringName(base_name)) {
+													for (int j = 0; j < m.m_enum->values.size(); j++) {
+														if (m.m_enum->values[j].identifier->name == StringName(word)) {
+															String target_source = (search_path == file_path) ? source : FileAccess::get_file_as_string(search_path);
+															Location loc;
+															loc.uri = path_to_uri(search_path);
+															loc.range.start.line = MAX(0, m.m_enum->values[j].identifier->start_line - 1);
+															loc.range.start.character = target_source.is_empty() ? 0 : _parser_column_to_lsp(target_source, m.m_enum->values[j].identifier->start_line, m.m_enum->values[j].identifier->start_column);
+															loc.range.end = loc.range.start;
+															return make_response(p_id, loc.to_dict());
+														}
+													}
+													found_enum = true;
+													break;
+												}
+											}
+										}
+									}
+
+									// Chained access: Class.Enum.VALUE (e.g. Node.ProcessMode.PROCESS_MODE_ALWAYS).
+									// base_name is the enum name — look back for another dot to find the class.
+									if (symbol.is_empty()) {
+										int prev_dot = base_start - 1;
+										while (prev_dot >= 0 && line_text[prev_dot] == ' ') {
+											prev_dot--;
+										}
+										if (prev_dot >= 0 && line_text[prev_dot] == '.') {
+											int cls_end = prev_dot - 1;
+											while (cls_end >= 0 && line_text[cls_end] == ' ') {
+												cls_end--;
+											}
+											int cls_start = cls_end;
+											while (cls_start >= 0 && ((line_text[cls_start] >= 'a' && line_text[cls_start] <= 'z') ||
+													(line_text[cls_start] >= 'A' && line_text[cls_start] <= 'Z') ||
+													(line_text[cls_start] >= '0' && line_text[cls_start] <= '9') ||
+													line_text[cls_start] == '_')) {
+												cls_start--;
+											}
+											cls_start++;
+											if (cls_start <= cls_end) {
+												String cls_name = line_text.substr(cls_start, cls_end - cls_start + 1);
+												// Native class enum member (e.g. Node.ProcessMode.PROCESS_MODE_ALWAYS).
+												if (db && db->class_exists(StringName(cls_name))) {
+													if (db->has_integer_constant(StringName(cls_name), StringName(word))) {
+														symbol = cls_name;
+														member = word;
+													}
+												}
+												// GDScript class enum member — check parsed class.
+												if (symbol.is_empty()) {
+													if (cls && cls->identifier && cls->identifier->name == StringName(cls_name)) {
+														// Current class enum.
+														symbol = cls_name;
+														member = word;
+													}
+													// Check cross-file classes.
+													if (symbol.is_empty() && class_to_path.has(cls_name)) {
+														symbol = cls_name;
+														member = word;
+													}
+												}
+											}
 										}
 									}
 								}
@@ -2781,7 +2909,8 @@ static String _generate_doc_markdown(const String &p_name, const DocClassData &p
 		md += "|------|------|---------|\n";
 		for (const DocPropertyData &prop : p_doc.properties) {
 			String def = prop.default_value.is_empty() ? "" : "`" + prop.default_value + "`";
-			md += "| `" + prop.type + "` | **" + prop.name + "** | " + def + " |\n";
+			String type = prop.enumeration.is_empty() ? prop.type : prop.enumeration;
+			md += "| `" + type + "` | **" + prop.name + "** | " + def + " |\n";
 		}
 		md += "\n";
 	}
@@ -2798,18 +2927,71 @@ static String _generate_doc_markdown(const String &p_name, const DocClassData &p
 		md += "\n";
 	}
 
-	// Constants.
-	if (!p_doc.constants.is_empty()) {
-		md += "## Constants\n\n";
+	// Enumerations — derive from constants' enumeration field (primary source)
+	// and supplement with DocEnumData descriptions when available.
+	{
+		Vector<String> enum_order;
+		HashMap<String, Vector<const DocConstantData *>> enum_members;
 		for (const DocConstantData &c : p_doc.constants) {
-			md += "### " + c.name + "\n\n";
-			md += "```gdscript\n" + c.name;
-			if (!c.value.is_empty()) {
-				md += " = " + c.value;
+			if (!c.enumeration.is_empty()) {
+				if (!enum_members.has(c.enumeration)) {
+					enum_order.push_back(c.enumeration);
+				}
+				enum_members[c.enumeration].push_back(&c);
 			}
-			md += "\n```\n\n";
-			if (!c.description.is_empty()) {
-				md += _bbcode_to_markdown(c.description) + "\n\n";
+		}
+		// Also include enums from the enums HashMap that have no constants.
+		for (const KeyValue<String, DocEnumData> &kv : p_doc.enums) {
+			if (!enum_members.has(kv.key)) {
+				enum_order.push_back(kv.key);
+			}
+		}
+		if (!enum_order.is_empty()) {
+			md += "## Enumerations\n\n";
+			for (const String &enum_name : enum_order) {
+				md += "### " + enum_name + "\n\n";
+				if (p_doc.enums.has(enum_name) && !p_doc.enums[enum_name].description.is_empty()) {
+					md += _bbcode_to_markdown(p_doc.enums[enum_name].description) + "\n\n";
+				}
+				if (enum_members.has(enum_name)) {
+					for (const DocConstantData *c : enum_members[enum_name]) {
+						md += "- **" + c->name + "**";
+						if (!c->value.is_empty()) {
+							md += " = `" + c->value + "`";
+						}
+						if (!c->description.is_empty()) {
+							md += " - " + _bbcode_to_markdown(c->description);
+						}
+						md += "\n";
+					}
+				}
+				md += "\n";
+			}
+		}
+	}
+
+	// Constants (non-enum).
+	{
+		bool has_standalone = false;
+		for (const DocConstantData &c : p_doc.constants) {
+			if (c.enumeration.is_empty()) {
+				has_standalone = true;
+				break;
+			}
+		}
+		if (has_standalone) {
+			md += "## Constants\n\n";
+			for (const DocConstantData &c : p_doc.constants) {
+				if (!c.enumeration.is_empty()) continue;
+				md += "### " + c.name + "\n\n";
+				md += "```gdscript\n" + c.name;
+				if (!c.value.is_empty()) {
+					md += " = " + c.value;
+				}
+				md += "\n```\n\n";
+				if (!c.description.is_empty()) {
+					md += _bbcode_to_markdown(c.description) + "\n\n";
+				}
 			}
 		}
 	}
@@ -2843,7 +3025,8 @@ static String _generate_doc_markdown(const String &p_name, const DocClassData &p
 		md += "## Property Descriptions\n\n";
 		for (const DocPropertyData &prop : p_doc.properties) {
 			md += "### " + prop.name + "\n\n";
-			md += "```gdscript\n" + prop.type + " " + prop.name;
+			String prop_type = prop.enumeration.is_empty() ? prop.type : prop.enumeration;
+			md += "```gdscript\n" + prop_type + " " + prop.name;
 			if (!prop.default_value.is_empty()) {
 				md += " = " + prop.default_value;
 			}
