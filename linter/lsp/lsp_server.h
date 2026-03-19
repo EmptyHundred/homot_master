@@ -9,7 +9,11 @@
 
 #ifdef HOMOT
 
+#include "lsp_completion.h"
+#include "lsp_definition.h"
+#include "lsp_hover.h"
 #include "lsp_protocol.h"
+#include "lsp_signature_help.h"
 
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
@@ -48,6 +52,12 @@ class Server {
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
 
+	// --- Handler sub-objects ---
+	CompletionHandler completion_handler;
+	SignatureHandler signature_handler;
+	DefinitionHandler definition_handler;
+	HoverHandler hover_handler;
+
 	// --- Request handlers ---
 	Dictionary handle_initialize(const Variant &p_id, const Dictionary &p_params);
 	void handle_initialized();
@@ -60,35 +70,32 @@ class Server {
 	void handle_did_save(const Dictionary &p_params);
 	void handle_did_change_watched_files(const Dictionary &p_params);
 
-	// --- Completion ---
-	Dictionary handle_completion(const Variant &p_id, const Dictionary &p_params);
-	String insert_cursor_sentinel(const String &p_source, int p_line, int p_character);
-	void collect_completions_for_context(const GDScriptParser &p_parser, Array &r_items);
-
-	// --- Signature Help ---
-	Dictionary handle_signature_help(const Variant &p_id, const Dictionary &p_params);
-
-	// --- Go-to-definition ---
-	Dictionary handle_definition(const Variant &p_id, const Dictionary &p_params);
-	String get_or_create_doc_file(const String &p_symbol);
-	int find_doc_line(const String &p_file_path, const String &p_member);
-
-	// --- Hover ---
-	Dictionary handle_hover(const Variant &p_id, const Dictionary &p_params);
-
 	// --- Diagnostics ---
 	void publish_diagnostics(const String &p_uri, const String &p_source);
 	void clear_diagnostics(const String &p_uri);
 
-	// --- Helpers ---
-	static String uri_to_path(const String &p_uri);
-	static String path_to_uri(const String &p_path);
-
+	// --- Workspace ---
 	void scan_workspace_classes();
 	void register_global_classes();
 
+	// Grant handlers access to server state.
+	friend class CompletionHandler;
+	friend class SignatureHandler;
+	friend class DefinitionHandler;
+	friend class HoverHandler;
+
 public:
+	Server() :
+			completion_handler(*this),
+			signature_handler(*this),
+			definition_handler(*this),
+			hover_handler(*this) {}
+
 	void set_db_path(const String &p_path) { db_path = p_path; }
+
+	// URI helpers (public static — used by handlers).
+	static String uri_to_path(const String &p_uri);
+	static String path_to_uri(const String &p_path);
 
 	// Process one JSON-RPC message. Returns true to continue, false to exit.
 	bool process_message(const Dictionary &p_msg);

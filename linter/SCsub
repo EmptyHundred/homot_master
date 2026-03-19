@@ -141,6 +141,11 @@ lsp_sources = []
 env_lsp.add_source_files(lsp_sources, "lsp/lsp_main.cpp")
 env_lsp.add_source_files(lsp_sources, "lsp/lsp_transport.cpp")
 env_lsp.add_source_files(lsp_sources, "lsp/lsp_server.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_utils.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_completion.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_signature_help.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_definition.cpp")
+env_lsp.add_source_files(lsp_sources, "lsp/lsp_hover.cpp")
 
 # Reuse stub objects already compiled for the linter (avoid duplicate targets).
 lsp_sources += [s for s in linter_sources if "stubs" in str(s)]
