@@ -922,13 +922,14 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 					}
 				}
 			} else if (base_dt.kind == GDScriptParser::DataType::CLASS && base_dt.class_type) {
-				// Script class — walk AST members.
+				// Script class — walk AST members, then continue up the inheritance chain.
 				if (base_dt.is_meta_type) {
 					CompletionItem new_item;
 					new_item.label = "new";
 					new_item.kind = COMPLETION_KIND_METHOD;
 					r_items.push_back(new_item.to_dict());
 				}
+				HashSet<String> added_labels;
 				const GDScriptParser::ClassNode *cls = base_dt.class_type;
 				for (int i = 0; i < cls->members.size(); i++) {
 					const GDScriptParser::ClassNode::Member &member = cls->members[i];
@@ -981,7 +982,141 @@ void Server::collect_completions_for_context(const GDScriptParser &p_parser, Arr
 						default:
 							continue;
 					}
+					added_labels.insert(item.label);
 					r_items.push_back(item.to_dict());
+				}
+
+				// Walk up the inheritance chain through script classes, then native classes.
+				GDScriptParser::DataType base_type = cls->base_type;
+				while (base_type.is_set() && base_type.kind == GDScriptParser::DataType::CLASS && base_type.class_type) {
+					const GDScriptParser::ClassNode *parent_cls = base_type.class_type;
+					for (int i = 0; i < parent_cls->members.size(); i++) {
+						const GDScriptParser::ClassNode::Member &member = parent_cls->members[i];
+						CompletionItem item;
+						switch (member.type) {
+							case GDScriptParser::ClassNode::Member::VARIABLE:
+								if (methods_only) continue;
+								item.label = member.variable->identifier->name;
+								item.kind = COMPLETION_KIND_FIELD;
+								break;
+							case GDScriptParser::ClassNode::Member::CONSTANT:
+								if (methods_only) continue;
+								item.label = member.constant->identifier->name;
+								item.kind = COMPLETION_KIND_CONSTANT;
+								break;
+							case GDScriptParser::ClassNode::Member::FUNCTION: {
+								item.label = member.function->identifier->name;
+								item.kind = COMPLETION_KIND_FUNCTION;
+								String sig = "(";
+								for (int j = 0; j < member.function->parameters.size(); j++) {
+									if (j > 0) sig += ", ";
+									sig += member.function->parameters[j]->identifier->name;
+									GDScriptParser::DataType pt = member.function->parameters[j]->get_datatype();
+									if (pt.is_set() && !pt.is_variant()) {
+										sig += ": " + pt.to_string();
+									}
+								}
+								sig += ")";
+								GDScriptParser::DataType rt = member.function->get_datatype();
+								if (rt.is_set() && !rt.is_variant()) {
+									sig += " -> " + rt.to_string();
+								}
+								item.detail = sig;
+							} break;
+							case GDScriptParser::ClassNode::Member::SIGNAL:
+								if (methods_only) continue;
+								item.label = member.signal->identifier->name;
+								item.kind = COMPLETION_KIND_EVENT;
+								break;
+							case GDScriptParser::ClassNode::Member::ENUM:
+								if (methods_only) continue;
+								item.label = member.m_enum->identifier->name;
+								item.kind = COMPLETION_KIND_ENUM;
+								break;
+							case GDScriptParser::ClassNode::Member::ENUM_VALUE:
+								if (methods_only) continue;
+								item.label = member.enum_value.identifier->name;
+								item.kind = COMPLETION_KIND_ENUM_MEMBER;
+								break;
+							default:
+								continue;
+						}
+						if (added_labels.has(item.label)) continue;
+						added_labels.insert(item.label);
+						r_items.push_back(item.to_dict());
+					}
+					base_type = parent_cls->base_type;
+				}
+
+				LinterDB *db = LinterDB::get_singleton();
+				while (base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE && db) {
+					StringName native_class = base_type.native_type;
+					if (!db->class_exists(native_class)) break;
+
+					// Methods.
+					{
+						List<MethodInfo> methods;
+						db->get_method_list(native_class, &methods, true);
+						for (const MethodInfo &mi : methods) {
+							if (mi.name.begins_with("_")) continue;
+							if (added_labels.has(mi.name)) continue;
+							added_labels.insert(mi.name);
+							CompletionItem item;
+							item.label = mi.name;
+							item.kind = COMPLETION_KIND_METHOD;
+							item.detail = _method_signature(mi);
+							r_items.push_back(item.to_dict());
+						}
+					}
+
+					if (!methods_only) {
+						// Properties.
+						{
+							List<PropertyInfo> props;
+							db->get_property_list(native_class, &props, true);
+							for (const PropertyInfo &pi : props) {
+								if (pi.name.begins_with("_")) continue;
+								if (added_labels.has(pi.name)) continue;
+								added_labels.insert(pi.name);
+								CompletionItem item;
+								item.label = pi.name;
+								item.kind = COMPLETION_KIND_PROPERTY;
+								r_items.push_back(item.to_dict());
+							}
+						}
+
+						// Signals.
+						{
+							List<MethodInfo> signals;
+							db->get_signal_list(native_class, &signals, true);
+							for (const MethodInfo &si : signals) {
+								if (added_labels.has(si.name)) continue;
+								added_labels.insert(si.name);
+								CompletionItem item;
+								item.label = si.name;
+								item.kind = COMPLETION_KIND_EVENT;
+								r_items.push_back(item.to_dict());
+							}
+						}
+
+						// Constants.
+						{
+							List<String> constants;
+							db->get_integer_constant_list(native_class, &constants, true);
+							for (const String &c : constants) {
+								if (added_labels.has(c)) continue;
+								added_labels.insert(c);
+								CompletionItem item;
+								item.label = c;
+								item.kind = COMPLETION_KIND_CONSTANT;
+								r_items.push_back(item.to_dict());
+							}
+						}
+					}
+
+					StringName parent = db->get_parent_class(native_class);
+					if (parent == StringName() || parent == native_class) break;
+					base_type.native_type = parent;
 				}
 			} else if (base_dt.kind == GDScriptParser::DataType::ENUM) {
 				// Enum type — list enum values.
