@@ -609,6 +609,41 @@ String bbcode_to_markdown(const String &p_bbcode) {
 	// Restore literal brackets from placeholders.
 	md = md.replace("\x01LB\x01", "[").replace("\x01RB\x01", "]");
 
+	// In markdown, a single newline doesn't produce a visible line break.
+	// Double all single newlines (outside code fences) so they render properly.
+	{
+		String result;
+		bool in_fence = false;
+		int i = 0;
+		while (i < md.length()) {
+			if (i + 2 < md.length() && md[i] == '`' && md[i + 1] == '`' && md[i + 2] == '`') {
+				in_fence = !in_fence;
+				result += "```";
+				i += 3;
+				continue;
+			}
+			if (md[i] == '\n' && !in_fence) {
+				// Check if the next char is already a newline (existing double).
+				if (i + 1 < md.length() && md[i + 1] == '\n') {
+					// Already a double newline — pass both through.
+					result += "\n\n";
+					i += 2;
+					// Skip any extra consecutive newlines.
+					while (i < md.length() && md[i] == '\n') {
+						i++;
+					}
+				} else {
+					result += "\n\n";
+					i++;
+				}
+			} else {
+				result += md[i];
+				i++;
+			}
+		}
+		md = result;
+	}
+
 	return md.strip_edges();
 }
 
