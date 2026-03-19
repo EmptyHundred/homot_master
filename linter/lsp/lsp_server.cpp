@@ -25,6 +25,7 @@ using linter::DocClassData;
 using linter::DocConstantData;
 using linter::DocMethodData;
 using linter::DocPropertyData;
+using linter::DocTutorialData;
 using linter::LinterDB;
 using linter::ScriptServerStub;
 
@@ -2100,6 +2101,84 @@ static bool _find_member_definition_in_class(
 	return false;
 }
 
+static String _generate_doc_markdown(const String &p_name, const DocClassData &p_doc, const String &p_parent = String());
+static String _generate_function_doc_markdown(const String &p_name, const DocMethodData &p_method);
+
+String Server::get_or_create_doc_file(const String &p_symbol) {
+	// Return cached path if available.
+	if (doc_file_cache.has(p_symbol)) {
+		return doc_file_cache[p_symbol];
+	}
+
+	// Initialize cache directory.
+	if (doc_cache_dir.is_empty()) {
+		doc_cache_dir = root_path.path_join(".godot").path_join("lsp_docs");
+		Ref<DirAccess> da = DirAccess::open(root_path);
+		if (da.is_valid()) {
+			da->make_dir_recursive(doc_cache_dir);
+		}
+	}
+
+	LinterDB *db = LinterDB::get_singleton();
+	if (!db) return String();
+
+	String markdown;
+
+	// Native class?
+	if (db->class_exists(StringName(p_symbol))) {
+		const DocClassData *doc = db->get_class_doc(StringName(p_symbol));
+		if (doc) {
+			String parent = db->get_parent_class(StringName(p_symbol));
+			markdown = _generate_doc_markdown(p_symbol, *doc, parent);
+		}
+	}
+
+	// Built-in type?
+	if (markdown.is_empty()) {
+		const DocClassData *doc = db->get_builtin_type_doc(p_symbol);
+		if (doc) {
+			markdown = _generate_doc_markdown(p_symbol, *doc);
+		}
+	}
+
+	// Utility function?
+	if (markdown.is_empty()) {
+		const DocMethodData *md = db->get_utility_function_doc(StringName(p_symbol));
+		if (md) {
+			markdown = _generate_function_doc_markdown(p_symbol, *md);
+		}
+	}
+
+	if (markdown.is_empty()) return String();
+
+	String file_path = doc_cache_dir.path_join(p_symbol + ".md");
+	Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::WRITE);
+	if (f.is_valid()) {
+		f->store_string(markdown);
+		f->flush();
+		f.unref();
+		doc_file_cache[p_symbol] = file_path;
+		return file_path;
+	}
+	return String();
+}
+
+int Server::find_doc_line(const String &p_file_path, const String &p_member) {
+	if (p_member.is_empty()) return 0;
+	Ref<FileAccess> f = FileAccess::open(p_file_path, FileAccess::READ);
+	if (f.is_null()) return 0;
+	String target = "### " + p_member;
+	int line = 0;
+	while (!f->eof_reached()) {
+		String l = f->get_line();
+		if (l.strip_edges().begins_with(target)) {
+			return line;
+		}
+		line++;
+	}
+	return 0;
+}
+
 Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_params) {
 	Dictionary td = p_params["textDocument"];
 	String uri = td["uri"];
@@ -2153,6 +2232,59 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 					}
 				}
 				if (!found_in_dep) {
+					// Resolution failed. Try native symbol doc before giving up.
+					String symbol;
+					String member;
+
+					if (ident->source == GDScriptParser::IdentifierNode::NATIVE_CLASS) {
+						symbol = ident->name;
+					} else if (ident->datatype.is_set() && ident->datatype.kind == GDScriptParser::DataType::NATIVE) {
+						symbol = ident->datatype.native_type;
+					}
+
+					// Check for native member (method/property on a native base class).
+					if (symbol.is_empty()) {
+						const GDScriptParser::ClassNode *cls = parser.get_tree();
+						if (cls) {
+							GDScriptParser::DataType base_type = cls->base_type;
+							LinterDB *db = LinterDB::get_singleton();
+							if (db && base_type.is_set() && base_type.kind == GDScriptParser::DataType::NATIVE) {
+								StringName check = base_type.native_type;
+								while (check != StringName()) {
+									if (db->has_method(check, ident->name, true) ||
+											db->has_property(check, ident->name, true) ||
+											db->has_signal(check, ident->name, true)) {
+										symbol = check;
+										member = ident->name;
+										break;
+									}
+									StringName parent = db->get_parent_class(check);
+									if (parent == StringName() || parent == check) break;
+									check = parent;
+								}
+							}
+						}
+					}
+
+					if (!symbol.is_empty()) {
+						String doc_path = get_or_create_doc_file(symbol);
+						if (!doc_path.is_empty()) {
+							Location loc;
+							loc.uri = path_to_uri(doc_path);
+							loc.range.start.line = 0;
+							loc.range.start.character = 0;
+							loc.range.end = loc.range.start;
+							if (!member.is_empty()) {
+								int member_line = find_doc_line(doc_path, member);
+								if (member_line > 0) {
+									loc.range.start.line = member_line;
+									loc.range.end.line = member_line;
+								}
+							}
+							return make_response(p_id, loc.to_dict());
+						}
+					}
+
 					ident = nullptr; // Fall through to text-based lookup.
 				}
 			}
@@ -2164,12 +2296,25 @@ Dictionary Server::handle_definition(const Variant &p_id, const Dictionary &p_pa
 		// global class names. Handles extends, type annotations, and other
 		// contexts not covered by the AST walker.
 		String word = _get_word_at_position(source, line, character);
-		if (word.is_empty() || !class_to_path.has(word)) {
+		if (!word.is_empty() && class_to_path.has(word)) {
+			def_path = class_to_path[word];
+			def_line = 1;
+			def_col = 1;
+		} else if (!word.is_empty()) {
+			// Try native class, built-in type, or utility function doc.
+			String doc_path = get_or_create_doc_file(word);
+			if (doc_path.is_empty()) {
+				return make_response(p_id, Variant());
+			}
+			Location loc;
+			loc.uri = path_to_uri(doc_path);
+			loc.range.start.line = 0;
+			loc.range.start.character = 0;
+			loc.range.end = loc.range.start;
+			return make_response(p_id, loc.to_dict());
+		} else {
 			return make_response(p_id, Variant());
 		}
-		def_path = class_to_path[word];
-		def_line = 1;
-		def_col = 1;
 	}
 
 	// Convert to LSP Location (0-based lines, tab-aware columns).
@@ -2250,7 +2395,8 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 
 	// Convert [codeblock]...[/codeblock] and [gdscript]...[/gdscript] to
 	// markdown fences, stripping common leading whitespace from the content.
-	for (const char *open_tag : { "[codeblock]", "[gdscript]" }) {
+	const char *code_tags[] = { "[codeblock]", "[gdscript]" };
+	for (const char *open_tag : code_tags) {
 		String close_tag = String(open_tag).replace("[", "[/");
 		int open_len = String(open_tag).length();
 		int close_len = close_tag.length();
@@ -2404,6 +2550,181 @@ static String _bbcode_to_markdown(const String &p_bbcode) {
 	md = md.replace("\x01LB\x01", "[").replace("\x01RB\x01", "]");
 
 	return md.strip_edges();
+}
+
+// Build a method signature string from doc data.
+static String _doc_method_sig(const DocMethodData &p_method) {
+	String sig = p_method.name + "(";
+	for (int i = 0; i < p_method.arguments.size(); i++) {
+		if (i > 0) sig += ", ";
+		sig += p_method.arguments[i].name;
+		if (!p_method.arguments[i].type.is_empty()) {
+			sig += ": " + p_method.arguments[i].type;
+		}
+		if (!p_method.arguments[i].default_value.is_empty()) {
+			sig += " = " + p_method.arguments[i].default_value;
+		}
+	}
+	sig += ")";
+	if (!p_method.return_type.is_empty() && p_method.return_type != "void") {
+		sig += " -> " + p_method.return_type;
+	}
+	if (!p_method.qualifiers.is_empty()) {
+		sig += " " + p_method.qualifiers;
+	}
+	return sig;
+}
+
+// Generate a full markdown documentation page from DocClassData.
+static String _generate_doc_markdown(const String &p_name, const DocClassData &p_doc, const String &p_parent) {
+	String md;
+	md += "# " + p_name + "\n\n";
+	if (!p_parent.is_empty()) {
+		md += "**Inherits:** `" + p_parent + "`\n\n";
+	}
+	if (!p_doc.brief_description.is_empty()) {
+		md += _bbcode_to_markdown(p_doc.brief_description) + "\n\n";
+	}
+	if (!p_doc.description.is_empty() && p_doc.description != p_doc.brief_description) {
+		md += "## Description\n\n";
+		md += _bbcode_to_markdown(p_doc.description) + "\n\n";
+	}
+
+	// Tutorials.
+	if (!p_doc.tutorials.is_empty()) {
+		md += "## Tutorials\n\n";
+		for (const DocTutorialData &tut : p_doc.tutorials) {
+			if (!tut.link.is_empty()) {
+				String title = tut.title.is_empty() ? tut.link : tut.title;
+				md += "- [" + title + "](" + tut.link + ")\n";
+			}
+		}
+		md += "\n";
+	}
+
+	// Properties overview table.
+	if (!p_doc.properties.is_empty()) {
+		md += "## Properties\n\n";
+		md += "| Type | Name | Default |\n";
+		md += "|------|------|---------|\n";
+		for (const DocPropertyData &prop : p_doc.properties) {
+			String def = prop.default_value.is_empty() ? "" : "`" + prop.default_value + "`";
+			md += "| `" + prop.type + "` | **" + prop.name + "** | " + def + " |\n";
+		}
+		md += "\n";
+	}
+
+	// Methods overview table.
+	if (!p_doc.methods.is_empty()) {
+		md += "## Methods\n\n";
+		md += "| Return | Signature |\n";
+		md += "|--------|-----------|\n";
+		for (const DocMethodData &m : p_doc.methods) {
+			String ret = m.return_type.is_empty() ? "void" : m.return_type;
+			md += "| `" + ret + "` | **" + _doc_method_sig(m) + "** |\n";
+		}
+		md += "\n";
+	}
+
+	// Constants.
+	if (!p_doc.constants.is_empty()) {
+		md += "## Constants\n\n";
+		for (const DocConstantData &c : p_doc.constants) {
+			md += "### " + c.name + "\n\n";
+			md += "```gdscript\n" + c.name;
+			if (!c.value.is_empty()) {
+				md += " = " + c.value;
+			}
+			md += "\n```\n\n";
+			if (!c.description.is_empty()) {
+				md += _bbcode_to_markdown(c.description) + "\n\n";
+			}
+		}
+	}
+
+	// Signals.
+	if (!p_doc.signals.is_empty()) {
+		md += "## Signals\n\n";
+		for (const DocMethodData &s : p_doc.signals) {
+			md += "### " + s.name + "\n\n";
+			md += "```gdscript\nsignal " + _doc_method_sig(s) + "\n```\n\n";
+			if (!s.description.is_empty()) {
+				md += _bbcode_to_markdown(s.description) + "\n\n";
+			}
+		}
+	}
+
+	// Constructors.
+	if (!p_doc.constructors.is_empty()) {
+		md += "## Constructors\n\n";
+		for (const DocMethodData &m : p_doc.constructors) {
+			md += "### " + m.name + "\n\n";
+			md += "```gdscript\n" + _doc_method_sig(m) + "\n```\n\n";
+			if (!m.description.is_empty()) {
+				md += _bbcode_to_markdown(m.description) + "\n\n";
+			}
+		}
+	}
+
+	// Property descriptions.
+	if (!p_doc.properties.is_empty()) {
+		md += "## Property Descriptions\n\n";
+		for (const DocPropertyData &prop : p_doc.properties) {
+			md += "### " + prop.name + "\n\n";
+			md += "```gdscript\n" + prop.type + " " + prop.name;
+			if (!prop.default_value.is_empty()) {
+				md += " = " + prop.default_value;
+			}
+			md += "\n```\n\n";
+			if (!prop.description.is_empty()) {
+				md += _bbcode_to_markdown(prop.description) + "\n\n";
+			}
+		}
+	}
+
+	// Method descriptions.
+	if (!p_doc.methods.is_empty()) {
+		md += "## Method Descriptions\n\n";
+		for (const DocMethodData &m : p_doc.methods) {
+			md += "### " + m.name + "\n\n";
+			md += "```gdscript\nfunc " + _doc_method_sig(m) + "\n```\n\n";
+			if (m.is_deprecated) {
+				md += "*Deprecated";
+				if (!m.deprecated_message.is_empty()) {
+					md += ": " + _bbcode_to_markdown(m.deprecated_message);
+				}
+				md += "*\n\n";
+			}
+			if (!m.description.is_empty()) {
+				md += _bbcode_to_markdown(m.description) + "\n\n";
+			}
+		}
+	}
+
+	// Operators.
+	if (!p_doc.operators.is_empty()) {
+		md += "## Operators\n\n";
+		for (const DocMethodData &m : p_doc.operators) {
+			md += "### " + m.name + "\n\n";
+			md += "```gdscript\n" + _doc_method_sig(m) + "\n```\n\n";
+			if (!m.description.is_empty()) {
+				md += _bbcode_to_markdown(m.description) + "\n\n";
+			}
+		}
+	}
+
+	return md;
+}
+
+// Generate a small doc page for a single utility function.
+static String _generate_function_doc_markdown(const String &p_name, const DocMethodData &p_method) {
+	String md;
+	md += "# " + p_name + "\n\n";
+	md += "```gdscript\nfunc " + _doc_method_sig(p_method) + "\n```\n\n";
+	if (!p_method.description.is_empty()) {
+		md += _bbcode_to_markdown(p_method.description) + "\n\n";
+	}
+	return md;
 }
 
 // Build a hover string for an identifier based on its source and type.

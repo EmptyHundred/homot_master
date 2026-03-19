@@ -40,6 +40,10 @@ class Server {
 	// LinterDB path (from CLI).
 	String db_path;
 
+	// Doc cache for go-to-definition on native symbols.
+	String doc_cache_dir;
+	HashMap<String, String> doc_file_cache; // symbol -> file path
+
 	// Global class registry (class_name -> file path, class_name -> extends).
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
@@ -66,6 +70,8 @@ class Server {
 
 	// --- Go-to-definition ---
 	Dictionary handle_definition(const Variant &p_id, const Dictionary &p_params);
+	String get_or_create_doc_file(const String &p_symbol);
+	int find_doc_line(const String &p_file_path, const String &p_member);
 
 	// --- Hover ---
 	Dictionary handle_hover(const Variant &p_id, const Dictionary &p_params);
