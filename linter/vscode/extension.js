@@ -60,7 +60,7 @@ function activate(context) {
 
 	client = new LanguageClient(
 		"homotLsp",
-		"Homot GDScript LSP",
+		"Homot HMScript/GDScript LSP",
 		serverOptions,
 		clientOptions
 	);

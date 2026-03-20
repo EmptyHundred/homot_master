@@ -1,7 +1,7 @@
 {
   "name": "homot-lsp",
-  "displayName": "Homot GDScript",
-  "description": "GDScript language support via homot-lsp",
+  "displayName": "Homot HMScript/GDScript",
+  "description": "HMScript/GDScript language support via homot-lsp",
   "version": "0.1.0",
   "publisher": "homot",
   "engines": {
