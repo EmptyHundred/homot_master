@@ -456,6 +456,10 @@ Dictionary DefinitionHandler::handle(const Variant &p_id, const Dictionary &p_pa
 										const GDScriptParser::ClassNode::Member &m = cls->get_member(StringName(base_name));
 										if (m.type == GDScriptParser::ClassNode::Member::VARIABLE) {
 											base_type = m.variable->get_datatype();
+										} else if (m.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+											base_type.kind = GDScriptParser::DataType::BUILTIN;
+											base_type.builtin_type = Variant::SIGNAL;
+											base_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
 										}
 									}
 

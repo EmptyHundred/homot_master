@@ -228,6 +228,18 @@ Dictionary SignatureHandler::handle(const Variant &p_id, const Dictionary &p_par
 			const GDScriptParser::ClassNode::Member &member = cls->get_member(StringName(call_ctx.base_text));
 			if (member.type == GDScriptParser::ClassNode::Member::VARIABLE) {
 				base_type = member.variable->get_datatype();
+			} else if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+				// For emit(), use the signal's own method_info for accurate parameter signatures.
+				if (call_ctx.func_name == "emit" && member.signal->method_info.arguments.size() > 0) {
+					MethodInfo mi = member.signal->method_info;
+					mi.name = "emit";
+					help.signatures.push_back(_sig_from_method_info("emit", mi));
+					found_sig = true;
+				} else {
+					base_type.kind = GDScriptParser::DataType::BUILTIN;
+					base_type.builtin_type = Variant::SIGNAL;
+					base_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+				}
 			}
 		}
 
