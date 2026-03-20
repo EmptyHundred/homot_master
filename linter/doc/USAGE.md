@@ -115,14 +115,12 @@ if env.get("linter", False):
 ### Build Commands
 
 ```bash
-# Recommended for distribution (~61MB)
+# For debug distribution (~15MB)
 scons platform=windows target=template_debug linter=yes
 
-# With editor libs (~145MB, reuses editor build artifacts)
-scons platform=windows target=editor linter=yes
+# For release distribution (~13MB)
+scons platform=windows target=template_release linter=yes
 
-# Development with debug symbols (~220MB)
-scons platform=windows target=editor dev_build=yes linter=yes
 ```
 
 The binary is output to `bin/homot-linter.<platform>.<target>.<arch>.exe`.
@@ -153,6 +151,96 @@ fi
 ### Parsing output
 
 Errors follow the pattern `ERROR: <file>:<line>:<col>: <message>`, which is compatible with most CI annotation parsers and editor problem matchers.
+
+## Language Server (homot-lsp)
+
+`homot-lsp` is a standalone LSP server that provides real-time GDScript diagnostics, completions, go-to-definition, hover, and signature help in any LSP-capable editor. It communicates over stdin/stdout using JSON-RPC.
+
+### LSP Quick Start
+
+```bash
+# Start the LSP server (stdio mode)
+homot-lsp --db linterdb.json
+```
+
+### LSP Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--db <path>` | Path to `linterdb.json`. If omitted, type resolution is limited. |
+| `--stdio` | Use stdio transport (default). |
+| `--help`, `-h` | Show help message and exit. |
+
+### LSP Features
+
+- **Diagnostics** — Real-time parse errors, type errors, and warnings as you type
+- **Completion** — Context-aware autocompletion for identifiers, methods, properties, signals, constants, annotations, and keywords
+- **Go-to-Definition** — Jump to variable declarations, function definitions, signal declarations, class files, and more (Ctrl+click or F12)
+- **Hover** — Type information and declaration kind on mouse-over
+- **Signature Help** — Parameter hints when calling functions
+
+### Building the LSP
+
+The LSP binary is built alongside the linter:
+
+```bash
+scons platform=windows target=template_debug linter=yes
+```
+
+This produces both `bin/linter/homot-linter.exe` and `bin/linter/homot-lsp.exe`.
+
+## VS Code Extension
+
+A VS Code extension is included at `linter/vscode/` that provides GDScript/HMScript language support via `homot-lsp`.
+
+### What It Provides
+
+- Syntax highlighting for `.gd`, `.hm`, and `.hmc` files
+- All LSP features (diagnostics, completion, go-to-definition, hover, signature help)
+- Bracket matching, auto-indentation, and comment toggling
+
+### Installing the Extension
+
+1. Install dependencies:
+
+```bash
+cd linter/vscode
+npm install
+```
+
+2. Package the extension as a `.vsix`:
+
+```bash
+# Install vsce if you don't have it
+npm install -g @vscode/vsce
+
+# Package
+cd linter/vscode
+vsce package
+```
+
+3. Install the `.vsix` in VS Code:
+
+```bash
+code --install-extension homot-lsp-0.1.0.vsix
+```
+
+Or in VS Code: **Extensions** sidebar → `...` menu → **Install from VSIX...** → select the `.vsix` file.
+
+### Extension Settings
+
+| Setting | Description |
+|---------|-------------|
+| `homotLsp.serverPath` | Path to the `homot-lsp` executable. If empty, the extension looks for it next to the extension folder or in `bin/linter/`. |
+| `homotLsp.dbPath` | Path to `linterdb.json`. If empty, looks for it in the workspace root. |
+
+### Development: Run Without Packaging
+
+For development, you can run the extension directly from source:
+
+1. Open `linter/vscode/` in VS Code
+2. Run `npm install`
+3. Press **F5** to launch an Extension Development Host with the extension loaded
 
 ## Known Limitations
 

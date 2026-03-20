@@ -41,6 +41,7 @@
 #endif
 
 #ifdef HOMOT_LINTER
+#include "core/object/ref_counted.h"
 #include "linter/stubs/linterdb.h"
 #endif
 
