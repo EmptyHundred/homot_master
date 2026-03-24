@@ -156,12 +156,27 @@ struct ClassData {
 	DocClassData doc;
 };
 
+// Utility function metadata loaded from JSON.
+struct UtilityFunctionData {
+	MethodInfo info;
+	bool is_vararg = false;
+};
+
 // Singleton data store. Loaded once at startup.
 class LinterDB {
 	static LinterDB *singleton;
 
 	HashMap<StringName, ClassData> classes;
 	HashSet<StringName> singletons;
+
+	// Utility functions (print, lerp, etc.) loaded from JSON.
+	HashMap<StringName, UtilityFunctionData> utility_functions;
+
+	// Global enums (Error, PropertyHint, etc.) — enum_name -> { const_name -> value }.
+	HashMap<StringName, HashMap<StringName, int64_t>> global_enums;
+
+	// Global constants not part of any enum.
+	HashMap<StringName, int64_t> global_constants;
 
 	// Documentation for built-in Variant types (int, float, Vector2, etc.).
 	HashMap<String, DocClassData> builtin_type_docs;
@@ -173,6 +188,7 @@ public:
 	static LinterDB *get_singleton() { return singleton; }
 
 	Error load_from_json(const String &p_path);
+	Error load_from_compressed(const uint8_t *p_data, uint32_t p_compressed_size, uint32_t p_uncompressed_size);
 
 	// Class queries.
 	bool class_exists(const StringName &p_class) const;
@@ -224,8 +240,34 @@ public:
 	void get_enum_list(const StringName &p_class, List<StringName> *r_enums, bool p_no_inheritance = false) const;
 	void get_integer_constant_list(const StringName &p_class, List<String> *r_constants, bool p_no_inheritance = false) const;
 
+	// Singleton listing.
+	void get_singleton_list(LocalVector<StringName> &r_singletons) const;
+
+	// Built-in type listing.
+	void get_builtin_type_list(LocalVector<String> &r_types) const;
+
+	// Utility function queries.
+	bool has_utility_function(const StringName &p_name) const;
+	const UtilityFunctionData *get_utility_function(const StringName &p_name) const;
+	void get_utility_function_list(LocalVector<StringName> &r_functions) const;
+
+	// Global enum queries.
+	void get_global_enum_list(LocalVector<StringName> &r_enums) const;
+	bool has_global_enum(const StringName &p_enum) const;
+	void get_global_enum_constants(const StringName &p_enum, HashMap<StringName, int64_t> &r_constants) const;
+
+	// Global constant queries.
+	void get_global_constant_list(LocalVector<StringName> &r_constants) const;
+	int64_t get_global_constant(const StringName &p_name, bool *r_valid = nullptr) const;
+
+	// Doc class queries (for @GlobalScope etc.).
+	const DocClassData *get_doc_class(const String &p_name) const;
+
 	LinterDB();
 	~LinterDB();
+
+private:
+	Error _load_from_dict(const Dictionary &p_root);
 };
 
 } // namespace linter

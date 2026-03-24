@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """
-SCsub for the standalone GDScript linter.
-Produces a separate homot-linter binary that links only the minimum set
-of engine libraries. Stub behavior is compiled into the engine source files
-via #ifdef HOMOT_LINTER guards, so no /FORCE:MULTIPLE is needed and the
-linker can strip unreferenced code (/OPT:REF).
+SCsub for the homot toolchain (lint + lsp + lspa, unified binary).
 
-To enable, add to root SConstruct after the platform SCsub line:
-    if env.get("linter", False):
-        SConscript("linter/SCsub")
+Produces a single `homot` binary with subcommands:
+    homot lint <path> [<path>...]   — GDScript linter
+    homot lsp                       — GDScript Language Server (stdio)
+    homot lspa                      — Language Server for Agents (stdio)
+
+The binary embeds a compressed copy of linterdb.json so no external
+database file is needed at runtime. Use --db to override.
 
 Build with:
     scons platform=windows target=template_debug linter=yes
@@ -18,66 +18,63 @@ from misc.utility.scons_hints import *
 Import("env")
 
 import os
+import subprocess
+import sys
 
-env_linter = env.Clone()
+env_homot = env.Clone()
 
 # Define HOMOT_LINTER so the engine source files compile with stub logic.
-env_linter.Append(CPPDEFINES=["HOMOT_LINTER"])
+env_homot.Append(CPPDEFINES=["HOMOT_LINTER"])
 
-# Remove the custom entry point set by the platform build — the linter has
+# Remove the custom entry point set by the platform build — homot has
 # its own standard main().
-linkflags = env_linter["LINKFLAGS"]
-if env_linter.msvc:
-    env_linter["LINKFLAGS"] = [f for f in linkflags if "ENTRY" not in str(f)]
+linkflags = env_homot["LINKFLAGS"]
+if env_homot.msvc:
+    env_homot["LINKFLAGS"] = [f for f in linkflags if "ENTRY" not in str(f)]
 else:
-    env_linter["LINKFLAGS"] = [f for f in linkflags if "--entry" not in str(f)]
+    env_homot["LINKFLAGS"] = [f for f in linkflags if "--entry" not in str(f)]
 
-# The linter is a console application.
-if env_linter.msvc:
-    linkflags = env_linter["LINKFLAGS"]
-    env_linter["LINKFLAGS"] = [
+# Console application.
+if env_homot.msvc:
+    linkflags = env_homot["LINKFLAGS"]
+    env_homot["LINKFLAGS"] = [
         "/SUBSYSTEM:CONSOLE" if "SUBSYSTEM:WINDOWS" in str(f) else f
         for f in linkflags
     ]
 
 # --- Linker optimization ---
-# /OPT:REF  — remove unreferenced functions/data (works now without /FORCE)
-# /OPT:ICF  — fold identical functions
-# /DEBUG:NONE — strip all debug info from the linter binary
-if env_linter.msvc:
-    env_linter["LINKFLAGS"] = [
-        f for f in env_linter["LINKFLAGS"]
+if env_homot.msvc:
+    env_homot["LINKFLAGS"] = [
+        f for f in env_homot["LINKFLAGS"]
         if str(f) not in ("/OPT:NOICF", "/OPT:NOREF", "/DEBUG:FULL")
     ]
-    env_linter.Append(LINKFLAGS=["/OPT:REF", "/OPT:ICF", "/DEBUG:NONE"])
+    env_homot.Append(LINKFLAGS=["/OPT:REF", "/OPT:ICF", "/DEBUG:NONE"])
 else:
-    env_linter.Append(LINKFLAGS=["-Wl,--gc-sections", "-s"])
+    env_homot.Append(LINKFLAGS=["-Wl,--gc-sections", "-s"])
 
 # --- Optimize for size ---
-if env_linter.msvc:
-    ccflags = env_linter["CCFLAGS"]
-    env_linter["CCFLAGS"] = [
+if env_homot.msvc:
+    ccflags = env_homot["CCFLAGS"]
+    env_homot["CCFLAGS"] = [
         "/Os" if (str(f) in ("/O2", "/Ox")) else f
         for f in ccflags
         if str(f) != "/Ob2"
     ]
 else:
-    ccflags = env_linter["CCFLAGS"]
-    env_linter["CCFLAGS"] = [
+    ccflags = env_homot["CCFLAGS"]
+    env_homot["CCFLAGS"] = [
         "-Os" if str(f) in ("-O2", "-O3") else f
         for f in ccflags
     ]
 
 # --- Minimal LIBS: only core + gdscript + holymolly ---
-# servers and drivers are NOT linked as monolithic libs — only the few
-# needed source files are compiled directly (see below).
 keep_names = {
     "core",
     "module_gdscript",
     "module_holymolly",
 }
 
-old_libs = env_linter["LIBS"]
+old_libs = env_homot["LIBS"]
 new_libs = []
 for lib in old_libs:
     if isinstance(lib, list):
@@ -93,20 +90,61 @@ for lib in old_libs:
     else:
         new_libs.append(lib)
 
-env_linter["LIBS"] = new_libs
+env_homot["LIBS"] = new_libs
 
-linter_sources = []
+# ---------------------------------------------------------------------------
+# Generate embedded linterdb if the source JSON exists.
+# ---------------------------------------------------------------------------
 
-# Compile linter-specific source files.
-env_linter.add_source_files(linter_sources, "main_linter.cpp")
-env_linter.add_source_files(linter_sources, "linter_run.cpp")
-env_linter.add_source_files(linter_sources, "stubs/*.cpp")
+linterdb_json = os.path.join(str(env.Dir("#")), "linter", "linterdb.json")
+linterdb_gen_cpp = os.path.join(str(env.Dir("#")), "linter", "linterdb_embedded.gen.cpp")
+embed_script = os.path.join(str(env.Dir("#")), "linter", "embed_linterdb.py")
 
-# Recompile engine source files that contain #ifdef HOMOT_LINTER stubs.
-# These .obj files replace the corresponding members in the engine .lib,
-# so the linker uses our stub versions without needing /FORCE:MULTIPLE.
-# We compile them with explicit output paths under linter/override/ to
-# avoid conflicting with the engine's own .obj files.
+if os.path.exists(linterdb_json):
+    # Regenerate if JSON is newer than the generated file.
+    needs_regen = not os.path.exists(linterdb_gen_cpp) or \
+        os.path.getmtime(linterdb_json) > os.path.getmtime(linterdb_gen_cpp)
+    if needs_regen:
+        print("Generating embedded linterdb...")
+        subprocess.check_call([sys.executable, embed_script, linterdb_json, linterdb_gen_cpp])
+
+if not os.path.exists(linterdb_gen_cpp):
+    print("WARNING: linterdb_embedded.gen.cpp not found. Place linterdb.json in linter/ and rebuild.")
+
+# ---------------------------------------------------------------------------
+# Source files
+# ---------------------------------------------------------------------------
+
+homot_sources = []
+
+# Unified entry point.
+env_homot.add_source_files(homot_sources, "homot_main.cpp")
+
+# Linter.
+env_homot.add_source_files(homot_sources, "linter_run.cpp")
+
+# Stubs.
+env_homot.add_source_files(homot_sources, "stubs/*.cpp")
+
+# LSP server.
+env_homot.add_source_files(homot_sources, "lsp/lsp_transport.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_server.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_utils.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_completion.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_signature_help.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_definition.cpp")
+env_homot.add_source_files(homot_sources, "lsp/lsp_hover.cpp")
+
+# LSPA server.
+env_homot.add_source_files(homot_sources, "lspa/lspa_server.cpp")
+env_homot.add_source_files(homot_sources, "lspa/query_engine.cpp")
+env_homot.add_source_files(homot_sources, "lspa/formatter.cpp")
+env_homot.add_source_files(homot_sources, "lspa/verifier.cpp")
+
+# Embedded linterdb.
+env_homot.add_source_files(homot_sources, "linterdb_embedded.gen.cpp")
+
+# Recompile engine source files with HOMOT_LINTER stubs.
 engine_override_sources = [
     "core/object/class_db.cpp",
     "core/config/engine.cpp",
@@ -114,46 +152,15 @@ engine_override_sources = [
     "core/io/resource_loader.cpp",
     "core/object/script_language.cpp",
     "core/register_core_types.cpp",
-    # Only the TextServer files needed (TextServerDummy is header-only):
     "servers/text/text_server.cpp",
     "servers/text/text_server_extension.cpp",
-    # Only the platform file/dir access implementations:
     "drivers/windows/file_access_windows.cpp",
     "drivers/windows/dir_access_windows.cpp",
 ]
 for src in engine_override_sources:
     obj_base = os.path.splitext(os.path.basename(src))[0]
     target = "override/" + obj_base
-    linter_sources.append(env_linter.Object(target, "#" + src))
+    homot_sources.append(env_homot.Object(target, "#" + src))
 
-# Build as a separate program.
-prog = env_linter.add_program("#bin/linter/homot-linter", linter_sources)
-
-# ---------------------------------------------------------------------------
-# LSP server binary — same engine bootstrap, different entry point.
-# ---------------------------------------------------------------------------
-
-env_lsp = env_linter.Clone()
-
-lsp_sources = []
-
-# LSP-specific source files.
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_main.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_transport.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_server.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_utils.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_completion.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_signature_help.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_definition.cpp")
-env_lsp.add_source_files(lsp_sources, "lsp/lsp_hover.cpp")
-
-# Reuse stub objects already compiled for the linter (avoid duplicate targets).
-lsp_sources += [s for s in linter_sources if "stubs" in str(s)]
-
-# Same engine override sources as the linter.
-for src in engine_override_sources:
-    obj_base = os.path.splitext(os.path.basename(src))[0]
-    target = "lsp_override/" + obj_base
-    lsp_sources.append(env_lsp.Object(target, "#" + src))
-
-lsp_prog = env_lsp.add_program("#bin/linter/homot-lsp", lsp_sources)
+# Build unified binary.
+prog = env_homot.add_program("#bin/linter/homot", homot_sources)

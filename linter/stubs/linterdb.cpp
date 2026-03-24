@@ -6,6 +6,7 @@
 
 #include "linterdb.h"
 
+#include "core/io/compression.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 
@@ -43,6 +44,9 @@ static MethodInfo _parse_method_info(const Dictionary &d) {
 	mi.name = d.get("name", "");
 	if (d.has("return_val")) {
 		mi.return_val = _parse_property_info(d["return_val"]);
+	} else if (d.has("return_type")) {
+		// Utility functions store return type as a direct integer ID.
+		mi.return_val.type = (Variant::Type)(int)d["return_type"];
 	}
 	mi.flags = (uint32_t)(int)d.get("flags", METHOD_FLAGS_DEFAULT);
 	mi.return_val_metadata = d.get("return_val_metadata", 0);
@@ -285,8 +289,10 @@ Error LinterDB::load_from_json(const String &p_path) {
 	Error err = json.parse(json_text);
 	ERR_FAIL_COND_V_MSG(err != OK, err, vformat("Failed to parse linterdb JSON: %s", json.get_error_message()));
 
-	Dictionary root = json.get_data();
+	return _load_from_dict(json.get_data());
+}
 
+Error LinterDB::_load_from_dict(const Dictionary &root) {
 	// Load singletons.
 	{
 		Array singleton_arr = root.get("singletons", Array());
@@ -384,6 +390,68 @@ Error LinterDB::load_from_json(const String &p_path) {
 		}
 	}
 
+	// Load utility functions.
+	// Supports both Array format [{name:"sin",...},...] and Dictionary format {"sin":{...},...}.
+	{
+		Variant uf_var = root.get("utility_functions", Variant());
+		if (uf_var.get_type() == Variant::ARRAY) {
+			Array uf_arr = uf_var;
+			for (int i = 0; i < uf_arr.size(); i++) {
+				Dictionary fd = uf_arr[i];
+				String func_name = fd.get("name", "");
+				if (func_name.is_empty()) {
+					continue;
+				}
+				UtilityFunctionData ufd;
+				ufd.info = _parse_method_info(fd);
+				if (ufd.info.name.is_empty()) {
+					ufd.info.name = func_name;
+				}
+				ufd.is_vararg = fd.get("is_vararg", false);
+				utility_functions[StringName(func_name)] = ufd;
+			}
+		} else if (uf_var.get_type() == Variant::DICTIONARY) {
+			Dictionary uf_dict = uf_var;
+			LocalVector<Variant> uf_keys = uf_dict.get_key_list();
+			for (const Variant &key : uf_keys) {
+				String func_name = key;
+				Dictionary fd = uf_dict[key];
+				UtilityFunctionData ufd;
+				ufd.info = _parse_method_info(fd);
+				if (ufd.info.name.is_empty()) {
+					ufd.info.name = func_name;
+				}
+				ufd.is_vararg = fd.get("is_vararg", false);
+				utility_functions[StringName(func_name)] = ufd;
+			}
+		}
+	}
+
+	// Load global enums.
+	{
+		Dictionary ge_dict = root.get("global_enums", Dictionary());
+		LocalVector<Variant> ge_keys = ge_dict.get_key_list();
+		for (const Variant &key : ge_keys) {
+			StringName enum_name = StringName(String(key));
+			Dictionary values = ge_dict[key];
+			HashMap<StringName, int64_t> enum_values;
+			LocalVector<Variant> value_keys = values.get_key_list();
+			for (const Variant &vk : value_keys) {
+				enum_values[StringName(String(vk))] = (int64_t)values[vk];
+			}
+			global_enums[enum_name] = enum_values;
+		}
+	}
+
+	// Load global constants.
+	{
+		Dictionary gc_dict = root.get("global_constants", Dictionary());
+		LocalVector<Variant> gc_keys = gc_dict.get_key_list();
+		for (const Variant &key : gc_keys) {
+			global_constants[StringName(String(key))] = (int64_t)gc_dict[key];
+		}
+	}
+
 	// Load built-in type documentation (int, float, Vector2, etc.).
 	{
 		Dictionary builtin_dict = root.get("builtin_types", Dictionary());
@@ -412,6 +480,22 @@ Error LinterDB::load_from_json(const String &p_path) {
 	}
 
 	return OK;
+}
+
+Error LinterDB::load_from_compressed(const uint8_t *p_data, uint32_t p_compressed_size, uint32_t p_uncompressed_size) {
+	// Decompress using Godot's Compression (zlib deflate).
+	Vector<uint8_t> decompressed;
+	decompressed.resize(p_uncompressed_size);
+	int64_t result = Compression::decompress(decompressed.ptrw(), p_uncompressed_size, p_data, p_compressed_size, Compression::MODE_DEFLATE);
+	ERR_FAIL_COND_V_MSG(result < 0, ERR_INVALID_DATA, "Failed to decompress embedded linterdb.");
+
+	String json_text = String::utf8((const char *)decompressed.ptr(), p_uncompressed_size);
+
+	JSON json;
+	Error err = json.parse(json_text);
+	ERR_FAIL_COND_V_MSG(err != OK, err, vformat("Failed to parse embedded linterdb JSON: %s", json.get_error_message()));
+
+	return _load_from_dict(json.get_data());
 }
 
 // --- Class queries ---
@@ -879,6 +963,87 @@ const DocConstantData *LinterDB::get_constant_doc(const StringName &p_class, con
 		current = cd->parent;
 	}
 	return nullptr;
+}
+
+// --- Singleton listing ---
+
+void LinterDB::get_singleton_list(LocalVector<StringName> &r_singletons) const {
+	for (const StringName &s : singletons) {
+		r_singletons.push_back(s);
+	}
+}
+
+// --- Built-in type listing ---
+
+void LinterDB::get_builtin_type_list(LocalVector<String> &r_types) const {
+	for (const KeyValue<String, DocClassData> &kv : builtin_type_docs) {
+		r_types.push_back(kv.key);
+	}
+}
+
+// --- Utility function queries ---
+
+bool LinterDB::has_utility_function(const StringName &p_name) const {
+	return utility_functions.has(p_name);
+}
+
+const UtilityFunctionData *LinterDB::get_utility_function(const StringName &p_name) const {
+	auto it = utility_functions.find(p_name);
+	return it ? &it->value : nullptr;
+}
+
+void LinterDB::get_utility_function_list(LocalVector<StringName> &r_functions) const {
+	for (const KeyValue<StringName, UtilityFunctionData> &kv : utility_functions) {
+		r_functions.push_back(kv.key);
+	}
+}
+
+// --- Global enum queries ---
+
+void LinterDB::get_global_enum_list(LocalVector<StringName> &r_enums) const {
+	for (const KeyValue<StringName, HashMap<StringName, int64_t>> &kv : global_enums) {
+		r_enums.push_back(kv.key);
+	}
+}
+
+bool LinterDB::has_global_enum(const StringName &p_enum) const {
+	return global_enums.has(p_enum);
+}
+
+void LinterDB::get_global_enum_constants(const StringName &p_enum, HashMap<StringName, int64_t> &r_constants) const {
+	auto it = global_enums.find(p_enum);
+	if (it) {
+		r_constants = it->value;
+	}
+}
+
+// --- Global constant queries ---
+
+void LinterDB::get_global_constant_list(LocalVector<StringName> &r_constants) const {
+	for (const KeyValue<StringName, int64_t> &kv : global_constants) {
+		r_constants.push_back(kv.key);
+	}
+}
+
+int64_t LinterDB::get_global_constant(const StringName &p_name, bool *r_valid) const {
+	auto it = global_constants.find(p_name);
+	if (it) {
+		if (r_valid) {
+			*r_valid = true;
+		}
+		return it->value;
+	}
+	if (r_valid) {
+		*r_valid = false;
+	}
+	return 0;
+}
+
+// --- Doc class queries ---
+
+const DocClassData *LinterDB::get_doc_class(const String &p_name) const {
+	auto it = doc_classes.find(p_name);
+	return it ? &it->value : nullptr;
 }
 
 } // namespace linter
