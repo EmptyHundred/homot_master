@@ -1,0 +1,23 @@
+[gd_scene load_steps=3 format=3 uid="uid://player001"]
+
+[ext_resource type="Script" path="player.gd" id="1_script"]
+[ext_resource type="Shape3D" path="res://capsule.tres" id="2_shape"]
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1_script")
+max_health = 200
+speed = 7.5
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = ExtResource("2_shape")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+
+[node name="UI" type="Control" parent="."]
+
+[node name="HealthBar" type="ProgressBar" parent="UI"]
+
+[node name="NameLabel" type="Label" parent="UI"]
+text = "Player"

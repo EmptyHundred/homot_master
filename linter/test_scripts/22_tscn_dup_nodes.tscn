@@ -1,0 +1,13 @@
+[gd_scene load_steps=1 format=3 uid="uid://test_dup"]
+
+[node name="Root" type="Node"]
+
+[node name="Child" type="Node" parent="."]
+
+[node name="Child" type="Sprite2D" parent="."]
+
+[node name="Sub" type="Node" parent="Child"]
+
+[node name="Sub" type="Node" parent="Child"]
+
+[node name="Unique" type="Node" parent="."]

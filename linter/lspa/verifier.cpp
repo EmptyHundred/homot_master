@@ -8,6 +8,7 @@
 
 #include "../stubs/linterdb.h"
 #include "../stubs/script_server_stub.h"
+#include "../workspace.h"
 
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
@@ -17,113 +18,9 @@
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
 
-using linter::LinterDB;
 using linter::ScriptServerStub;
 
 namespace lspa {
-
-// Recursively collect script files from a directory.
-static void _collect_scripts(const String &p_dir, Vector<String> &r_scripts) {
-	Ref<DirAccess> da = DirAccess::open(p_dir);
-	if (da.is_null()) {
-		return;
-	}
-	da->list_dir_begin();
-	String file = da->get_next();
-	while (!file.is_empty()) {
-		if (da->current_is_dir()) {
-			if (file != "." && file != "..") {
-				_collect_scripts(p_dir.path_join(file), r_scripts);
-			}
-		} else {
-			String ext = file.get_extension().to_lower();
-			if (ext == "gd" || ext == "hm" || ext == "hmc") {
-				r_scripts.push_back(p_dir.path_join(file));
-			}
-		}
-		file = da->get_next();
-	}
-	da->list_dir_end();
-}
-
-// Extract class_name from source (lightweight, no full parse).
-static String _extract_class_name(const String &p_source) {
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-		if (line_str.begins_with("class_name")) {
-			String rest = line_str.substr(10).strip_edges();
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return String();
-}
-
-static String _extract_extends(const String &p_source) {
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-		if (line_str.begins_with("extends")) {
-			String rest = line_str.substr(7).strip_edges();
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return "RefCounted";
-}
-
-static StringName _resolve_native_base(const String &p_extends, const HashMap<String, String> &p_class_to_extends) {
-	String current = p_extends;
-	HashSet<String> visited;
-	while (!current.is_empty() && !visited.has(current)) {
-		visited.insert(current);
-		if (ClassDB::class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		LinterDB *db = LinterDB::get_singleton();
-		if (db && db->class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		auto it = p_class_to_extends.find(current);
-		if (it) {
-			current = it->value;
-		} else {
-			break;
-		}
-	}
-	return StringName("RefCounted");
-}
 
 // Collect diagnostics from a parsed script into arrays.
 static void _collect_diagnostics(const GDScriptParser &p_parser, const String &p_file, const String &p_severity_filter, Array &r_diagnostics) {
@@ -180,32 +77,16 @@ Dictionary Verifier::handle_lint(const Dictionary &p_params) {
 	for (int i = 0; i < paths_arr.size(); i++) {
 		String path = String(paths_arr[i]).replace("\\", "/");
 		if (DirAccess::exists(path)) {
-			_collect_scripts(path, script_paths);
-		} else {
-			String ext = path.get_extension().to_lower();
-			if (ext == "gd" || ext == "hm" || ext == "hmc") {
-				script_paths.push_back(path);
-			}
+			workspace::collect_scripts(path, script_paths);
+		} else if (workspace::is_script_file(path)) {
+			script_paths.push_back(path);
 		}
 	}
 
 	// Pre-scan for class_name and register global classes.
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
-	for (const String &path : script_paths) {
-		String source = FileAccess::get_file_as_string(path);
-		String cname = _extract_class_name(source);
-		if (!cname.is_empty()) {
-			class_to_path[cname] = path;
-			class_to_extends[cname] = _extract_extends(source);
-		}
-	}
-	for (const KeyValue<String, String> &kv : class_to_path) {
-		StringName native_base = _resolve_native_base(
-				class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted",
-				class_to_extends);
-		ScriptServerStub::register_global_class(StringName(kv.key), kv.value, native_base);
-	}
+	workspace::scan_and_register_classes(script_paths, class_to_path, class_to_extends);
 
 	// Lint each file.
 	int total_errors = 0;
@@ -229,7 +110,6 @@ Dictionary Verifier::handle_lint(const Dictionary &p_params) {
 		int before = diagnostics.size();
 		_collect_diagnostics(parser, path, severity, diagnostics);
 
-		// Count errors and warnings from what was added.
 		for (int i = before; i < diagnostics.size(); i++) {
 			Dictionary d = diagnostics[i];
 			if (String(d.get("severity", "")) == "error") {
@@ -267,7 +147,6 @@ Dictionary Verifier::handle_check(const Dictionary &p_params) {
 		return result;
 	}
 
-	// Use the filename as a virtual path for the parser.
 	String virtual_path = filename;
 	if (!virtual_path.contains("/") && !virtual_path.contains("\\")) {
 		virtual_path = "/tmp/" + virtual_path;
@@ -284,7 +163,6 @@ Dictionary Verifier::handle_check(const Dictionary &p_params) {
 	Array all_diagnostics;
 	_collect_diagnostics(parser, "", severity, all_diagnostics);
 
-	// Split into errors and warnings for the response.
 	Array errors;
 	Array warnings;
 	for (int i = 0; i < all_diagnostics.size(); i++) {

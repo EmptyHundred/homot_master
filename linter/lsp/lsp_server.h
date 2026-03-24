@@ -1,8 +1,8 @@
 /**************************************************************************/
 /*  lsp_server.h                                                          */
 /**************************************************************************/
-/*  LSP server — manages documents, dispatches requests, publishes        */
-/*  diagnostics by running the GDScript parser/analyzer.                  */
+/*  Unified server — manages documents, dispatches LSP and LSPA requests, */
+/*  publishes diagnostics by running the GDScript parser/analyzer.         */
 /**************************************************************************/
 
 #pragma once
@@ -14,6 +14,11 @@
 #include "lsp_hover.h"
 #include "lsp_protocol.h"
 #include "lsp_signature_help.h"
+
+#include "../lspa/query_engine.h"
+#include "../lspa/verifier.h"
+#include "../resource_lint.h"
+#include "../shader_lint.h"
 
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
@@ -52,11 +57,15 @@ class Server {
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
 
-	// --- Handler sub-objects ---
+	// --- LSP handler sub-objects ---
 	CompletionHandler completion_handler;
 	SignatureHandler signature_handler;
 	DefinitionHandler definition_handler;
 	HoverHandler hover_handler;
+
+	// --- LSPA handler sub-objects ---
+	lspa::QueryEngine query_engine;
+	lspa::Verifier verifier;
 
 	// --- Request handlers ---
 	Dictionary handle_initialize(const Variant &p_id, const Dictionary &p_params);
@@ -72,11 +81,11 @@ class Server {
 
 	// --- Diagnostics ---
 	void publish_diagnostics(const String &p_uri, const String &p_source);
+	void publish_diagnostics_for_file(const String &p_uri, const String &p_source);
 	void clear_diagnostics(const String &p_uri);
 
 	// --- Workspace ---
 	void scan_workspace_classes();
-	void register_global_classes();
 
 	// Grant handlers access to server state.
 	friend class CompletionHandler;

@@ -1,51 +1,64 @@
-# homot-lsp Design Document
+# homot Server Design Document
 
 ## Overview
 
-`homot-lsp` is a standalone GDScript Language Server Protocol (LSP) server built on top of `homot-linter`. It reuses the engine's `GDScriptParser` and `GDScriptAnalyzer` — the same code that powers the Godot editor — but runs as a long-lived process communicating over stdin/stdout using JSON-RPC, making it usable from any LSP-capable editor (VS Code, Neovim, Emacs, etc.).
+`homot serve` starts a unified Language Server that handles both standard LSP methods (for editors) and LSPA methods (for AI agents) in a single process. It reuses the engine's `GDScriptParser` and `GDScriptAnalyzer` — the same code that powers the Godot editor — plus custom linters for `.tscn`/`.tres` and `.gdshader` files.
 
-The LSP inherits the linter's architecture: link-time stub overrides, `linterdb.json` type database, and minimal engine bootstrap.
+The server communicates over stdin/stdout using JSON-RPC 2.0 with Content-Length framing (standard LSP base protocol). It inherits the linter's architecture: link-time stub overrides, embedded `linterdb.json` type database, and minimal engine bootstrap.
 
 ## Architecture
 
 ```
- ┌──────────────────────────────────────────────────────────┐
- │                    homot-lsp binary                       │
- ├───────────────┬──────────────────────────────────────────┤
- │ lsp_main      │  Entry point, engine bootstrap,          │
- │               │  JSON-RPC message loop                   │
- ├───────────────┼──────────────────────────────────────────┤
- │ lsp_server    │  Document state, request dispatch,       │
- │               │  diagnostics, completion, definition     │
- ├───────────────┼──────────────────────────────────────────┤
- │ lsp_transport │  JSON-RPC framing over stdin/stdout      │
- │               │  (Content-Length headers)                 │
- ├───────────────┼──────────────────────────────────────────┤
- │ lsp_protocol  │  LSP type definitions, JSON-RPC helpers  │
- ├───────────────┼──────────────────────────────────────────┤
- │ stubs/        │  Same link-time overrides as the linter  │
- └───────────────┴──────────────────────────────────────────┘
-         │                        │
-         │ links against          │ reads at runtime
-         ▼                        ▼
- ┌───────────────┐       ┌─────────────────┐
- │ Engine libs   │       │ linterdb.json   │
- └───────────────┘       └─────────────────┘
+ ┌──────────────────────────────────────────────────────────────┐
+ │                      homot serve                              │
+ ├───────────────┬──────────────────────────────────────────────┤
+ │ homot_main    │  Engine bootstrap, JSON-RPC message loop      │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ lsp_server    │  Unified dispatch: LSP + LSPA methods         │
+ │               │  Document state, workspace scanning           │
+ │               │  Diagnostics (scripts, resources, shaders)    │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ LSP handlers  │  completion, definition, hover, sig_help      │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ LSPA handlers │  query_engine (api/*), verifier (verify/*)    │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ workspace     │  Shared file collection + class scanning      │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ lsp_transport │  JSON-RPC framing over stdin/stdout           │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ lsp_protocol  │  LSP type definitions, JSON-RPC helpers       │
+ ├───────────────┼──────────────────────────────────────────────┤
+ │ stubs/        │  Same link-time overrides as the linter       │
+ └───────────────┴──────────────────────────────────────────────┘
 ```
 
 ## Lifecycle
 
 ```
-Editor spawns homot-lsp --db linterdb.json
+Editor/Agent spawns: homot serve
   │
   ├── Engine bootstrap (one-time, ~200ms)
-  │     └── Same as linter: core types, TextServerDummy, GDScript module
+  │     └── core types, TextServerDummy, GDScript module, embedded linterdb
   │
   ├── Message loop (blocking reads on stdin)
   │     │
-  │     ├── initialize        → load LinterDB, scan workspace for class_name
+  │     ├── initialize        → scan workspace, register classes
+  │     │                       returns LSP + LSPA capabilities
   │     ├── initialized       → (no-op)
-  │     ├── textDocument/*    → document management + analysis
+  │     │
+  │     │  --- LSP methods (for editors) ---
+  │     ├── textDocument/didOpen|didChange|didClose|didSave
+  │     ├── textDocument/completion
+  │     ├── textDocument/signatureHelp
+  │     ├── textDocument/definition
+  │     ├── textDocument/hover
+  │     ├── workspace/didChangeWatchedFiles
+  │     │
+  │     │  --- LSPA methods (for AI agents) ---
+  │     ├── api/class|classes|search|hierarchy|catalog|globals
+  │     ├── verify/lint|check
+  │     ├── code/typeof|signature|complete  (stubs)
+  │     │
   │     ├── shutdown          → flag for exit
   │     └── exit              → break loop
   │
@@ -59,7 +72,7 @@ Standard LSP base protocol over stdin/stdout:
 - Read: parse `Content-Length` header, read exactly N bytes, JSON parse
 - Write: `JSON::stringify` → `Content-Length: N\r\n\r\n` + body + `fflush`
 
-## Document Management (lsp_server)
+## Document Management
 
 Open documents are stored in a `HashMap<String, DocumentState>` keyed by URI:
 ```cpp
@@ -70,48 +83,25 @@ struct DocumentState {
 };
 ```
 
-Full document sync (TextDocumentSyncKind = 1): on every `didChange`, the client sends the entire document text. This is simpler and the parser needs full source anyway.
+Full document sync (TextDocumentSyncKind = 1): on every `didChange`, the client sends the entire document text.
 
-## Feature: Diagnostics
+## Diagnostics
 
-**Status: Implemented**
+On `didOpen`, `didChange`, and `didSave`, the server routes diagnostics based on file type:
 
-On `didOpen` and `didChange`:
-1. `GDScriptParser::parse(source, path, false)` — full parse
-2. `GDScriptAnalyzer::analyze()` — type checking
-3. Collect `parser.get_errors()` → LSP `Diagnostic` with severity Error
-4. Collect `parser.get_warnings()` → LSP `Diagnostic` with severity Warning
-5. Publish via `textDocument/publishDiagnostics` notification
+| File type | Linter used | Diagnostic source |
+|-----------|-------------|-------------------|
+| `.gd`, `.hm`, `.hmc` | GDScriptParser + GDScriptAnalyzer | `"gdscript"` |
+| `.tscn`, `.tres` | `resource_lint` | `"resource"` |
+| `.gdshader` | `shader_lint` | `"gdshader"` |
 
 Line numbers: parser uses 1-based, LSP uses 0-based. Convert with `MAX(0, line - 1)`.
 
 ## Feature: Completion
 
-**Status: Implemented**
+**Status: Implemented** (GDScript only)
 
-### How the Parser's Completion Mode Works
-
-The `GDScriptParser` has built-in completion support via a cursor sentinel character:
-
-1. Insert `U+FFFF` (sentinel) into the source at the cursor byte offset
-2. Call `parser.parse(modified_source, path, true)` — the `true` enables `for_completion`
-3. The tokenizer recognizes the sentinel and tracks cursor position
-4. During parsing, when the parser encounters tokens near the cursor, it populates `completion_context` with:
-   - `type` — what kind of completion (26+ modes)
-   - `current_class`, `current_function`, `current_suite` — scope at cursor
-   - `node` — the AST node at cursor (with resolved `DataType` after analysis)
-5. Call `analyzer.analyze()` — resolves types on the AST
-6. Read `parser.get_completion_context()` and generate completions
-
-### Cursor Position to Byte Offset
-
-LSP sends (line, character) both 0-based. To insert the sentinel:
-```
-Split source into lines
-Navigate to line[p_line]
-Insert U+FFFF at character position p_character
-Rejoin into single string
-```
+The `GDScriptParser` has built-in completion support via a cursor sentinel character (`U+FFFF`). The server inserts it at the cursor position, re-parses with `for_completion=true`, then reads the `completion_context` to generate items.
 
 ### Completion Context Types Handled
 
@@ -124,117 +114,52 @@ Rejoin into single string
 | `COMPLETION_TYPE_NAME` | List available types (native classes, global classes, builtin types) |
 | `COMPLETION_ANNOTATION` | List GDScript annotations (@export, @onready, etc.) |
 | `COMPLETION_CALL_ARGUMENTS` | Enum values for typed parameters |
-| `COMPLETION_NONE` | No completions |
-
-### Querying Completions
-
-For **IDENTIFIER** completion (most common — typing in open scope):
-- Walk `current_suite` locals (variables, constants, parameters, iterators)
-- Walk `current_class` members (variables, constants, functions, signals, enums, classes)
-- Walk inheritance chain via LinterDB (native methods, properties, signals)
-- Add global classes from ScriptServerStub
-- Add native class names from LinterDB
-- Add GDScript keywords and utility functions
-
-For **ATTRIBUTE** completion (after `.`):
-- The `context.node` is a `SubscriptNode` with `base` expression
-- Read `base->datatype` after analysis to determine the type
-- If `DataType::NATIVE` → query LinterDB for the native class's members
-- If `DataType::CLASS` → walk the script class AST members
-- If `DataType::BUILTIN` → query `Variant` API for the builtin type's members
-
-### CompletionItem Mapping
-
-```
-Engine CODE_COMPLETION_KIND  →  LSP CompletionItemKind
-─────────────────────────────────────────────────────
-FUNCTION                     →  Function (3)
-MEMBER                       →  Field (5)
-VARIABLE                     →  Variable (6)
-CONSTANT                     →  Constant (21)
-CLASS                        →  Class (7)
-SIGNAL                       →  Event (23)
-ENUM                         →  Enum (13)
-PLAIN_TEXT                   →  Keyword (14)
-```
 
 ## Feature: Go-to-Definition
 
-**Status: Implemented**
+**Status: Implemented** (GDScript only)
 
-Ctrl+click or F12 on any identifier jumps to its definition.
-
-### How It Works
-
-1. Parse + analyze the file normally (no sentinel needed)
-2. Walk the AST recursively to find the deepest `IdentifierNode` at cursor position
-3. Read `identifier->source` enum to determine origin:
-
-| Source | Resolution |
-|---|---|
-| `FUNCTION_PARAMETER` | `parameter_source->start_line` in same file |
-| `LOCAL_VARIABLE`, `MEMBER_VARIABLE`, `INHERITED_VARIABLE`, `STATIC_VARIABLE` | `variable_source->start_line` in same file |
-| `LOCAL_CONSTANT`, `MEMBER_CONSTANT` | `constant_source->start_line` in same file |
-| `MEMBER_FUNCTION` | `function_source->start_line` in same file |
-| `MEMBER_SIGNAL` | `signal_source->start_line` in same file |
-| `MEMBER_CLASS` | `datatype.class_type->start_line` in same file |
-| `LOCAL_ITERATOR`, `LOCAL_BIND` | `bind_source->start_line` in same file |
-| `NATIVE_CLASS` | No location (returns null) |
-| Global class name (fallback) | Looked up in `class_to_path` map |
-
-4. Return LSP `Location { uri, range }` with 0-based line conversion
-
-### AST Node Finding
-
-The tree walker recursively descends through:
-- `ClassNode::members` → functions, variables, inner classes
-- `FunctionNode::body` → `SuiteNode`
-- `SuiteNode::statements` → all statement types (if, for, while, match, return, assignment, expressions)
-- Expression nodes → call arguments, binary/unary/ternary operands, subscript base/attribute
-
-At each level, `_node_contains_position()` checks whether the node's `start_line..end_line` / `start_column..end_column` range contains the cursor, and prefers the deepest (most specific) match.
-
-### Supported Patterns
-
-- `var x = ...` → jump from usage of `x` to its `var` declaration
-- `func foo():` → jump from call `foo()` to its `func` definition
-- `signal my_sig` → jump from `my_sig.emit()` to signal declaration
-- `class_name Foo` → jump from `Foo` usage in another file to the class file
-- Function parameters → jump to the parameter in the function signature
-- `for i in range(10):` → jump from usage of `i` to the `for` statement
-- Inner classes, constants, enums → jump to their declaration
+Ctrl+click or F12 on any identifier jumps to its definition. The server walks the AST to find the deepest `IdentifierNode` at the cursor position, then resolves its source (parameter, local variable, member, function, signal, class, etc.) to a file location.
 
 ## Feature: Hover
 
-**Status: Implemented**
+**Status: Implemented** (GDScript only)
 
-Mouse-over any identifier to see its type and declaration kind.
+Mouse-over any identifier to see its type and declaration kind. Reuses the same AST walker as go-to-definition.
 
-### How It Works
+## Feature: Signature Help
 
-Reuses the same AST walker as go-to-definition (`_find_identifier_at_position`):
-1. Parse + analyze the file
-2. Find the `IdentifierNode` at cursor position
-3. Format the hover text based on `identifier->source` and `identifier->datatype`
+**Status: Implemented** (GDScript only)
 
-### Hover Text Format
+Parameter hints when calling functions, triggered by `(` and `,`.
 
-Displayed as a GDScript markdown code block:
+## Unified Initialize Response
 
-| Source | Hover text |
-|---|---|
-| Parameter | `(parameter) name: Type` |
-| Local variable | `(local variable) name: Type` |
-| Local constant | `(local constant) name: Type` |
-| Iterator (for loop) | `(iterator) name: Type` |
-| Member variable | `(property) name: Type` |
-| Member constant | `(constant) name: Type` |
-| Member function | `func name(param: Type, ...) -> ReturnType` (full signature) |
-| Signal | `(signal) name` |
-| Inner class | `(class) name` |
-| Native class | `(native class) name` |
+The `initialize` response includes both standard LSP capabilities and LSPA-specific fields:
 
-For functions, the full signature is reconstructed from the `FunctionNode` — parameter names, types, and return type.
+```jsonc
+{
+  "capabilities": {
+    "textDocumentSync": { "openClose": true, "change": 1, "save": true },
+    "completionProvider": { "triggerCharacters": [".", "@"] },
+    "signatureHelpProvider": { "triggerCharacters": ["(", ","] },
+    "definitionProvider": true,
+    "hoverProvider": true
+  },
+  "serverInfo": { "name": "homot-lsp", "version": "0.1.0" },
+  "lspaCapabilities": {
+    "discover": ["class", "classes", "search", "hierarchy", "catalog", "globals"],
+    "write": ["typeof", "signature", "complete"],
+    "verify": ["lint", "check", "contract"]
+  },
+  "lspaStats": {
+    "classes": 1025,
+    "builtin_types": 39,
+    "singletons": 39,
+    "utility_functions": 114
+  }
+}
+```
 
 ## Limitations
 
@@ -247,24 +172,33 @@ Same as the linter:
 Additionally:
 - No incremental parsing — full re-parse on every change
 - No rename/refactoring support
-- No signature help (planned)
 - No workspace-wide diagnostics (only open files)
+- Completion/definition/hover only for GDScript (not resources or shaders)
 
 ## File Inventory
 
 ```
 linter/lsp/
-├── lsp_main.cpp        — Entry point + engine bootstrap + message loop
-├── lsp_server.h/.cpp   — Document management, request dispatch, features
-├── lsp_transport.h/.cpp — JSON-RPC over stdin/stdout
-└── lsp_protocol.h      — LSP types and JSON-RPC helpers
+├── lsp_server.h/.cpp          ← Unified server (LSP + LSPA dispatch)
+├── lsp_transport.h/.cpp       ← JSON-RPC over stdin/stdout
+├── lsp_protocol.h             ← LSP types and JSON-RPC helpers
+├── lsp_completion.h/.cpp      ← textDocument/completion handler
+├── lsp_definition.h/.cpp      ← textDocument/definition handler
+├── lsp_hover.h/.cpp           ← textDocument/hover handler
+├── lsp_signature_help.h/.cpp  ← textDocument/signatureHelp handler
+└── lsp_utils.h/.cpp           ← Symbol resolution utilities
+
+linter/lspa/
+├── query_engine.h/.cpp        ← LSPA DISCOVER handlers (api/*)
+├── verifier.h/.cpp            ← LSPA VERIFY handlers (verify/*)
+└── formatter.h/.cpp           ← LSPA output formatting
 
 linter/vscode/
-├── package.json                 — VS Code extension manifest
-├── extension.js                 — Spawns homot-lsp via vscode-languageclient
-├── language-configuration.json  — Bracket/comment/indent rules
+├── package.json               ← VS Code extension manifest
+├── extension.js               ← Spawns 'homot serve' via vscode-languageclient
+├── language-configuration.json
 └── syntaxes/
-    └── gdscript.tmLanguage.json — TextMate grammar for syntax highlighting
+    └── gdscript.tmLanguage.json
 ```
 
 ## Build
@@ -273,4 +207,4 @@ linter/vscode/
 scons platform=windows target=template_debug linter=yes
 ```
 
-Produces `bin/linter/homot-lsp.exe` (and `bin/linter/homot-linter.exe`).
+Produces `bin/linter/homot.<platform>.<target>.<arch>.exe`.

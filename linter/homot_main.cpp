@@ -11,7 +11,6 @@
 #include "linter_run.h"
 #include "lsp/lsp_server.h"
 #include "lsp/lsp_transport.h"
-#include "lspa/lspa_server.h"
 #include "stubs/linterdb.h"
 
 #include "modules/gdscript/gdscript.h"
@@ -220,6 +219,7 @@ static void engine_bootstrap() {
 	gdscript_cache_inst = memnew(GDScriptCache);
 
 	initialize_holymolly_module(MODULE_INITIALIZATION_LEVEL_SERVERS);
+
 }
 
 static void engine_cleanup() {
@@ -302,43 +302,16 @@ static int cmd_lint(int argc, char *argv[], const char *db_override) {
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand: lsp
+// Subcommand: serve (unified LSP + LSPA server)
 // ---------------------------------------------------------------------------
 
-static int cmd_lsp(const char *db_override) {
+static int cmd_serve(const char *db_override) {
 	if (!load_linterdb(db_override)) {
 		fprintf(stderr, "ERROR: Failed to load linterdb.\n");
 		return 1;
 	}
 
 	lsp::Server server;
-	// DB is already loaded; set empty path so server doesn't try to reload.
-	server.set_db_path(String());
-
-	while (true) {
-		Dictionary msg = lsp::Transport::read_message();
-		if (msg.is_empty()) {
-			break;
-		}
-		if (!server.process_message(msg)) {
-			break;
-		}
-	}
-
-	return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Subcommand: lspa
-// ---------------------------------------------------------------------------
-
-static int cmd_lspa(const char *db_override) {
-	if (!load_linterdb(db_override)) {
-		fprintf(stderr, "ERROR: Failed to load linterdb.\n");
-		return 1;
-	}
-
-	lspa::Server server;
 	server.set_db_path(String());
 
 	while (true) {
@@ -361,16 +334,14 @@ static int cmd_lspa(const char *db_override) {
 static void print_help() {
 	printf("Usage: homot <command> [options] [args...]\n\n");
 	printf("Commands:\n");
-	printf("  lint <path> [<path>...]   Lint .gd/.hm/.hmc scripts\n");
-	printf("  lsp                       Start GDScript Language Server (stdio)\n");
-	printf("  lspa                      Start Language Server for Agents (stdio)\n");
+	printf("  lint <path> [<path>...]   Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files\n");
+	printf("  serve                     Start unified Language Server (LSP + LSPA, stdio)\n");
 	printf("\nGlobal Options:\n");
 	printf("  --db <path>    Override embedded linterdb with external JSON file\n");
 	printf("  --help, -h     Show this help message\n");
 	printf("\nExamples:\n");
 	printf("  homot lint scripts/\n");
-	printf("  homot lsp\n");
-	printf("  homot lspa\n");
+	printf("  homot serve\n");
 	printf("  homot lint --db custom.json scripts/player.gd\n");
 }
 
@@ -419,10 +390,8 @@ int main(int argc, char *argv[]) {
 
 	if (strcmp(command, "lint") == 0) {
 		result = cmd_lint(cmd_argc, cmd_argv, db_override);
-	} else if (strcmp(command, "lsp") == 0) {
-		result = cmd_lsp(db_override);
-	} else if (strcmp(command, "lspa") == 0) {
-		result = cmd_lspa(db_override);
+	} else if (strcmp(command, "serve") == 0) {
+		result = cmd_serve(db_override);
 	} else {
 		fprintf(stderr, "Unknown command: %s\nUse --help for usage information.\n", command);
 	}

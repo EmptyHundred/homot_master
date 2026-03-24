@@ -11,36 +11,53 @@ function activate(context) {
 	let serverPath = config.get("serverPath");
 	if (!serverPath) {
 		// Default: look next to the extension, then in the repo bin/.
+		// The binary is named "homot" (with possible platform/target suffixes).
 		const candidates = [
-			path.join(context.extensionPath, "homot-lsp.exe"),
-			path.join(context.extensionPath, "..", "..", "bin", "linter", "homot-lsp.exe"),
+			path.join(context.extensionPath, "homot.exe"),
+			path.join(context.extensionPath, "..", "..", "bin", "linter", "homot.exe"),
 			// Non-Windows:
-			path.join(context.extensionPath, "homot-lsp"),
-			path.join(context.extensionPath, "..", "..", "bin", "linter", "homot-lsp"),
+			path.join(context.extensionPath, "homot"),
+			path.join(context.extensionPath, "..", "..", "bin", "linter", "homot"),
 		];
 		serverPath = candidates.find((p) => {
 			try { require("fs").accessSync(p); return true; } catch { return false; }
 		});
+
+		// Also try glob-matching for versioned binaries (e.g. homot.windows.template_debug.x86_64.exe).
+		if (!serverPath) {
+			const fs = require("fs");
+			const dirs = [
+				context.extensionPath,
+				path.join(context.extensionPath, "..", "..", "bin", "linter"),
+			];
+			for (const dir of dirs) {
+				try {
+					const files = fs.readdirSync(dir);
+					const match = files.find((f) => f.startsWith("homot.") && (f.endsWith(".exe") || !f.includes(".")));
+					if (match) {
+						serverPath = path.join(dir, match);
+						break;
+					}
+				} catch {}
+			}
+		}
+
 		if (!serverPath) {
 			window.showErrorMessage(
-				"homot-lsp executable not found. Set homotLsp.serverPath in settings."
+				"homot executable not found. Set homotLsp.serverPath in settings."
 			);
 			return;
 		}
 	}
 
-	// Resolve linterdb.json path.
-	let dbPath = config.get("dbPath");
-	if (!dbPath && workspace.workspaceFolders) {
-		const wsRoot = workspace.workspaceFolders[0].uri.fsPath;
-		const candidate = path.join(wsRoot, "linterdb.json");
-		try { require("fs").accessSync(candidate); dbPath = candidate; } catch {}
-	}
+	// Build server arguments: "serve" subcommand.
+	const args = ["serve"];
 
-	// Build server arguments.
-	const args = ["--stdio"];
+	// Optional: override embedded linterdb with external JSON.
+	const dbPath = config.get("dbPath");
 	if (dbPath) {
-		args.push("--db", dbPath);
+		// --db must come before the subcommand.
+		args.unshift("--db", dbPath);
 	}
 
 	const serverOptions = {
@@ -52,15 +69,17 @@ function activate(context) {
 		documentSelector: [
 			{ scheme: "file", language: "gdscript" },
 			{ scheme: "file", language: "hmscript" },
+			{ scheme: "file", language: "gdresource" },
+			{ scheme: "file", language: "gdshader" },
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher("**/*.{gd,hm,hmc}"),
+			fileEvents: workspace.createFileSystemWatcher("**/*.{gd,hm,hmc,tscn,tres,gdshader}"),
 		},
 	};
 
 	client = new LanguageClient(
 		"homotLsp",
-		"Homot HMScript/GDScript LSP",
+		"Homot HMScript/GDScript",
 		serverOptions,
 		clientOptions
 	);

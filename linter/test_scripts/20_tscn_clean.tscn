@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3 uid="uid://test_clean"]
+
+[ext_resource type="Script" path="01_clean.gd" id="1_script"]
+
+[node name="Root" type="Node"]
+script = ExtResource("1_script")
+
+[node name="Timer" type="Timer" parent="."]
+wait_time = 2.0
+one_shot = true
+
+[node name="Child" type="Node3D" parent="."]

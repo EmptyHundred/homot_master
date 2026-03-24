@@ -1,0 +1,4 @@
+[gd_resource type="NonExistentResourceType" format=3 uid="uid://test_tres_bad"]
+
+[resource]
+some_prop = 42

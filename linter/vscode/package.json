@@ -1,7 +1,7 @@
 {
   "name": "homot-lsp",
   "displayName": "Homot HMScript/GDScript",
-  "description": "HMScript/GDScript language support via homot-lsp",
+  "description": "HMScript/GDScript language support via homot serve",
   "version": "0.1.0",
   "publisher": "homot",
   "engines": {
@@ -10,7 +10,9 @@
   "categories": ["Programming Languages"],
   "activationEvents": [
     "onLanguage:gdscript",
-    "onLanguage:hmscript"
+    "onLanguage:hmscript",
+    "onLanguage:gdresource",
+    "onLanguage:gdshader"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -26,6 +28,16 @@
         "aliases": ["HMScript"],
         "extensions": [".hm", ".hmc"],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "gdresource",
+        "aliases": ["Godot Resource", "TSCN", "TRES"],
+        "extensions": [".tscn", ".tres"]
+      },
+      {
+        "id": "gdshader",
+        "aliases": ["Godot Shader", "GDShader"],
+        "extensions": [".gdshader"]
       }
     ],
     "grammars": [
@@ -47,12 +59,12 @@
         "homotLsp.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to homot-lsp executable. If empty, uses the bundled binary."
+          "description": "Path to homot executable. If empty, auto-discovers in extension dir or bin/linter/."
         },
         "homotLsp.dbPath": {
           "type": "string",
           "default": "",
-          "description": "Path to linterdb.json. If empty, looks for it in the workspace root."
+          "description": "(Optional) Path to external linterdb.json override. DB is embedded by default."
         }
       }
     }

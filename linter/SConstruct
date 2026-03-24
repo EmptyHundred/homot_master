@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-SConstruct for homot — unified GDScript toolchain.
+SConstruct for homot — unified linting and language server toolchain.
 
 This is a BUILD MANIFEST documenting what's needed. Homot cannot be
 built fully standalone because it depends on core/ types (Variant, String,
@@ -25,9 +25,8 @@ PRACTICAL BUILD APPROACH:
         scons platform=windows target=editor dev_build=yes linter=yes
 
     This produces bin/linter/homot — a single binary with subcommands:
-        homot lint <path> [<path>...]  — GDScript linter
-        homot lsp                      — GDScript Language Server (stdio)
-        homot lspa                     — Language Server for Agents (stdio)
+        homot lint <path> [<path>...]  — Lint scripts, scenes, shaders
+        homot serve                    — Unified Language Server (LSP + LSPA)
 
     The binary embeds a compressed copy of linterdb.json (~2 MB) so no
     external database file is needed at runtime.
@@ -47,13 +46,18 @@ HOW IT WORKS:
 
 FILES COMPILED:
     linter/homot_main.cpp               - Unified entry + subcommand dispatch
-    linter/linter_run.cpp               - Lint logic (collect, pre-scan, analyze)
+    linter/workspace.cpp                - Shared utilities (file collection, class scanning)
+    linter/linter_run.cpp               - CLI lint logic (all file types)
+    linter/resource_lint.cpp            - .tscn/.tres linter
+    linter/shader_lint.cpp              - .gdshader linter
     linter/stubs/linterdb.cpp           - JSON data store + compressed loader
     linter/stubs/classdb_stub.cpp       - StubMethodBind for ClassDB::get_method()
     linter/stubs/script_server_stub.cpp - ScriptServerStub global class registry
     linter/linterdb_embedded.gen.cpp    - Auto-generated embedded linterdb data
-    linter/lsp/*.cpp                    - LSP server implementation
-    linter/lspa/*.cpp                   - LSPA server implementation
+    linter/lsp/*.cpp                    - Unified server (LSP + LSPA dispatch)
+    linter/lspa/query_engine.cpp        - LSPA DISCOVER handlers
+    linter/lspa/verifier.cpp            - LSPA VERIFY handlers
+    linter/lspa/formatter.cpp           - LSPA output formatting
 
 ENGINE FILES RECOMPILED (with HOMOT_LINTER):
     core/object/class_db.cpp            - ClassDB query methods → LinterDB

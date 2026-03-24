@@ -123,6 +123,15 @@ env_homot.add_source_files(homot_sources, "homot_main.cpp")
 # Linter.
 env_homot.add_source_files(homot_sources, "linter_run.cpp")
 
+# Shared workspace utilities.
+env_homot.add_source_files(homot_sources, "workspace.cpp")
+
+# Resource (.tscn/.tres) linter.
+env_homot.add_source_files(homot_sources, "resource_lint.cpp")
+
+# Shader (.gdshader) linter.
+env_homot.add_source_files(homot_sources, "shader_lint.cpp")
+
 # Stubs.
 env_homot.add_source_files(homot_sources, "stubs/*.cpp")
 
@@ -135,8 +144,7 @@ env_homot.add_source_files(homot_sources, "lsp/lsp_signature_help.cpp")
 env_homot.add_source_files(homot_sources, "lsp/lsp_definition.cpp")
 env_homot.add_source_files(homot_sources, "lsp/lsp_hover.cpp")
 
-# LSPA server.
-env_homot.add_source_files(homot_sources, "lspa/lspa_server.cpp")
+# LSPA handlers (query_engine, verifier, formatter — dispatched by the unified server).
 env_homot.add_source_files(homot_sources, "lspa/query_engine.cpp")
 env_homot.add_source_files(homot_sources, "lspa/formatter.cpp")
 env_homot.add_source_files(homot_sources, "lspa/verifier.cpp")

@@ -1,0 +1,9 @@
+[gd_scene load_steps=1 format=3 uid="uid://test_unk_type"]
+
+[node name="Root" type="Node"]
+
+[node name="Bad1" type="NonExistentNodeType" parent="."]
+
+[node name="Bad2" type="FakeSprite2D" parent="."]
+
+[node name="Good" type="Sprite2D" parent="."]

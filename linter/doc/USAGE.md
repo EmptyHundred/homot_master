@@ -2,28 +2,25 @@
 
 ## Overview
 
-`homot` is a unified GDScript toolchain providing three capabilities in a single binary:
+`homot` is a unified toolchain for linting and language server support, packaged as a single binary:
 
 | Command | Description |
 |---------|-------------|
-| `homot lint` | Static analysis for `.gd`, `.hm`, `.hmc` scripts |
-| `homot lsp` | Language Server Protocol server (editor integration) |
-| `homot lspa` | Language Server Protocol for Agents (AI agent integration) |
+| `homot lint` | Static analysis for `.gd`, `.hm`, `.hmc`, `.tscn`, `.tres`, `.gdshader` files |
+| `homot serve` | Unified Language Server (LSP + LSPA) over stdin/stdout |
 
 The binary embeds a compressed copy of `linterdb.json` (~2 MB), so **no external database file is needed**. Use `--db` to override with a custom database.
 
 ## Quick Start
 
 ```bash
-# Lint scripts
+# Lint scripts, scenes, resources, and shaders
 homot lint scripts/
 homot lint player.gd enemy.gd scripts/ai/
+homot lint main.tscn assets/theme.tres shaders/
 
-# Start LSP server (for editors like VS Code)
-homot lsp
-
-# Start LSPA server (for AI agents like HMClaw)
-homot lspa
+# Start unified server (for editors and AI agents)
+homot serve
 
 # Override embedded database
 homot --db custom_linterdb.json lint scripts/
@@ -35,9 +32,8 @@ homot --db custom_linterdb.json lint scripts/
 Usage: homot <command> [options] [args...]
 
 Commands:
-  lint <path> [<path>...]   Lint .gd/.hm/.hmc scripts
-  lsp                       Start GDScript Language Server (stdio)
-  lspa                      Start Language Server for Agents (stdio)
+  lint <path> [<path>...]   Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files
+  serve                     Start unified Language Server (LSP + LSPA, stdio)
 
 Global Options:
   --db <path>    Override embedded linterdb with external JSON file
@@ -48,12 +44,14 @@ Global Options:
 
 | Code | Meaning |
 |------|---------|
-| `0`  | Success (lint: no errors; lsp/lspa: clean shutdown) |
+| `0`  | Success (lint: no errors; serve: clean shutdown) |
 | `1`  | Errors found, or invalid arguments |
 
 ---
 
 ## Lint
+
+### GDScript (.gd, .hm, .hmc)
 
 Runs the same `GDScriptParser` and `GDScriptAnalyzer` as the Godot editor. Checks include:
 
@@ -66,26 +64,51 @@ Runs the same `GDScriptParser` and `GDScriptAnalyzer` as the Godot editor. Check
 - **Cross-file class resolution** — `class_name` declarations are pre-scanned so scripts can reference each other
 - **Warnings** — unused variables, shadowed variables, etc. (requires `DEBUG_ENABLED` builds)
 
+### Scene/Resource Files (.tscn, .tres)
+
+Parses the Godot text resource format and validates:
+
+- **Header format** — valid `[gd_scene]` or `[gd_resource]` header
+- **Node/resource types** — checks that `type="..."` exists in linterdb
+- **Property names** — validates property names against the declared type's definition
+- **Duplicate node names** — detects sibling nodes with the same name under one parent
+- **Resource references** — verifies `ExtResource("id")` and `SubResource("id")` refer to declared resources
+- **Section structure** — unknown or malformed section tags
+
+### Shader Files (.gdshader)
+
+Lightweight structural and syntax checks:
+
+- **shader_type declaration** — must be first statement; must be one of `spatial`, `canvas_item`, `particles`, `sky`, `fog`
+- **Brace/parenthesis matching** — unclosed `{` `}` `(` `)` detection
+- **Uniform validation** — type checking against known GLSL/Godot types, duplicate uniform detection
+- **Block comment termination** — unterminated `/* ... */` detection
+
 ### Output Format
 
 ```
+Found 15 file(s): 13 scripts, 1 resources, 1 shaders.
   OK: path/to/script.gd
   SKIP (empty): path/to/empty.gd
   ERROR: path/to/script.gd:3:14: Cannot assign a value of type "String" as "int".
   WARN:  path/to/script.gd:10: [UNUSED_VARIABLE] The local variable "x" is declared but never used.
+  ERROR: path/to/scene.tscn:5: Unknown node type "FooBar".
+  WARN:  path/to/scene.tscn:12: Property "nonexistent" not found on type "Node3D".
+  OK: path/to/shader.gdshader
+  ERROR: path/to/bad.gdshader:4: Duplicate uniform "color".
 
 === Lint Summary ===
-Scripts:  42
+Files:    15 (scripts: 13, resources: 1, shaders: 1)
 Errors:   3
-Warnings: 7
+Warnings: 2
 ```
 
-Error format: `ERROR: <file>:<line>:<column>: <message>` — compatible with CI annotation parsers and editor problem matchers.
+Error format: `ERROR: <file>:<line>[:<column>]: <message>` — compatible with CI annotation parsers and editor problem matchers.
 
 ### CI Integration
 
 ```bash
-homot lint project/scripts/
+homot lint project/
 if [ $? -ne 0 ]; then
     echo "Lint errors found!"
     exit 1
@@ -94,49 +117,31 @@ fi
 
 ```yaml
 # GitHub Actions
-- name: Lint GDScript
-  run: ./homot lint project/scripts/
+- name: Lint Project
+  run: ./homot lint project/
 ```
 
 ---
 
-## LSP
+## Serve (Unified LSP + LSPA)
 
-`homot lsp` is a Language Server providing real-time GDScript diagnostics, completions, go-to-definition, hover, and signature help. Communicates over stdin/stdout JSON-RPC.
+`homot serve` starts a single JSON-RPC server over stdin/stdout that handles both:
+- **Standard LSP methods** (`textDocument/*`) — for editors like VS Code
+- **LSPA methods** (`api/*`, `verify/*`, `code/*`) — for AI agents like HMClaw
 
-### Features
+Clients only call the methods they care about. A VS Code extension sends `textDocument/*`, while an AI agent sends `api/*` and `verify/*`. Both can connect to the same server.
 
-- **Diagnostics** — Real-time parse errors, type errors, and warnings
+### LSP Features (for Editors)
+
+- **Diagnostics** — Real-time parse errors, type errors, and warnings for `.gd`, `.hm`, `.hmc`, `.tscn`, `.tres`, `.gdshader`
 - **Completion** — Context-aware autocompletion for identifiers, methods, properties, signals, constants, annotations, keywords
 - **Go-to-Definition** — Jump to variable declarations, function definitions, signal declarations, class files (Ctrl+click / F12)
 - **Hover** — Type information and documentation on mouse-over
 - **Signature Help** — Parameter hints when calling functions
 
-### VS Code Extension
+### LSPA Features (for AI Agents)
 
-A VS Code extension is included at `linter/vscode/`. Install:
-
-```bash
-cd linter/vscode && npm install
-npm install -g @vscode/vsce
-vsce package
-code --install-extension homot-lsp-*.vsix
-```
-
-Extension settings:
-
-| Setting | Description |
-|---------|-------------|
-| `homotLsp.serverPath` | Path to `homot` binary. If empty, looks next to the extension or in `bin/linter/`. |
-| `homotLsp.dbPath` | *(Deprecated)* No longer needed — DB is embedded. Still works as override. |
-
----
-
-## LSPA — Language Server Protocol for Agents
-
-`homot lspa` is designed for AI agent workflows. It provides three capability domains:
-
-### DISCOVER — API 查询
+#### DISCOVER — API 查询
 
 | Method | Description |
 |--------|-------------|
@@ -147,7 +152,7 @@ Extension settings:
 | `api/catalog` | 按域（3d, 2d, ui, physics, audio）列出类目录 |
 | `api/globals` | 查询全局函数、单例、枚举、常量 |
 
-### WRITE — 代码辅助
+#### WRITE — 代码辅助
 
 | Method | Description |
 |--------|-------------|
@@ -155,7 +160,7 @@ Extension settings:
 | `code/signature` | 查询方法签名 |
 | `code/complete` | 代码片段补全 |
 
-### VERIFY — 代码验证
+#### VERIFY — 代码验证
 
 | Method | Description |
 |--------|-------------|
@@ -163,21 +168,21 @@ Extension settings:
 | `verify/check` | 验证代码字符串（不需要文件存在于磁盘） |
 | `verify/contract` | 验证脚本是否满足接口契约 |
 
-### Protocol
+### LSPA Protocol
 
 JSON-RPC 2.0 over stdin/stdout, Content-Length 头分帧。无状态，无需文档生命周期管理。
 
 ```jsonc
-// Initialize
+// Initialize (returns both LSP capabilities and LSPA capabilities)
 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
 
-// Query a class
+// Query a class (LSPA)
 {"jsonrpc": "2.0", "id": 2, "method": "api/class", "params": {"name": "CharacterBody3D", "detail": "standard"}}
 
-// Search APIs
+// Search APIs (LSPA)
 {"jsonrpc": "2.0", "id": 3, "method": "api/search", "params": {"query": "collision body", "limit": 10}}
 
-// Verify code
+// Verify code (LSPA)
 {"jsonrpc": "2.0", "id": 4, "method": "verify/check", "params": {"content": "extends Node3D\n...", "filename": "test.gd"}}
 
 // Shutdown
@@ -194,6 +199,26 @@ JSON-RPC 2.0 over stdin/stdout, Content-Length 头分帧。无状态，无需文
 | `standard` | 名字 + 签名，省略空描述 | ~800 |
 | `full` | 完整签名 + 描述 + 文档 | ~2000+ |
 
+### VS Code Extension
+
+A VS Code extension is included at `linter/vscode/`. Install:
+
+```bash
+cd linter/vscode && npm install
+npm install -g @vscode/vsce
+vsce package
+code --install-extension homot-lsp-*.vsix
+```
+
+The extension launches `homot serve` and supports `.gd`, `.hm`, `.hmc`, `.tscn`, `.tres`, `.gdshader` files.
+
+Extension settings:
+
+| Setting | Description |
+|---------|-------------|
+| `homotLsp.serverPath` | Path to `homot` executable. If empty, auto-discovers in extension dir or `bin/linter/`. |
+| `homotLsp.dbPath` | (Optional) Path to external linterdb.json override. DB is embedded by default. |
+
 ### HMClaw 集成
 
 ```toml
@@ -201,8 +226,8 @@ JSON-RPC 2.0 over stdin/stdout, Content-Length 头分帧。无状态，无需文
 [lspa]
 enabled = true
 command = "homot"
-args = ["lspa"]
-extensions = ["gd", "hm", "hmc"]
+args = ["serve"]
+extensions = ["gd", "hm", "hmc", "tscn", "tres", "gdshader"]
 ```
 
 完整协议规范参见 [LSPA_DESIGN.md](../../../docs/LSPA_DESIGN.md)。
@@ -261,9 +286,10 @@ scons platform=windows target=template_release linter=yes
 homot (single binary, ~18 MB)
 ├── Embedded linterdb (~2 MB compressed, ~18 MB decompressed)
 ├── Engine bootstrap (minimal OS, core types, GDScript module)
-├── Subcommand: lint → linter_run.cpp
-├── Subcommand: lsp  → lsp/lsp_server.cpp
-└── Subcommand: lspa → lspa/lspa_server.cpp + query_engine.cpp
+├── Subcommand: lint → linter_run.cpp + resource_lint.cpp + shader_lint.cpp
+└── Subcommand: serve → lsp/lsp_server.cpp (unified LSP + LSPA dispatch)
+    ├── LSP handlers: completion, definition, hover, signature_help
+    └── LSPA handlers: lspa/query_engine.cpp, lspa/verifier.cpp, lspa/formatter.cpp
 ```
 
 ## Known Limitations
@@ -271,3 +297,5 @@ homot (single binary, ~18 MB)
 - **No `preload()`/`load()` resolution** — Resources cannot be loaded at lint time. Scripts using `preload()` for type references may produce false positives.
 - **No autoloads** — Project autoload singletons are not registered. References to autoloads will be unresolved.
 - **No GDExtension classes** — Only classes present in the engine at `--dump-linterdb` time are available.
+- **Resource lint: property false positives** — Some dynamically-added properties (e.g. from mixins or runtime-registered classes) may trigger false "property not found" warnings in `.tscn`/`.tres` files.
+- **Shader lint: syntax only** — The `.gdshader` linter performs structural checks only (Phase 1). Full semantic analysis (built-in variable types, function signatures) requires RenderingServer integration.

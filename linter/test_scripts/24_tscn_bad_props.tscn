@@ -1,0 +1,12 @@
+[gd_scene load_steps=1 format=3 uid="uid://test_bad_props"]
+
+[node name="Root" type="Node"]
+nonexistent_property = true
+
+[node name="Timer" type="Timer" parent="."]
+wait_time = 1.0
+this_is_not_a_timer_prop = "bad"
+
+[node name="Sprite" type="Sprite2D" parent="."]
+position = Vector2(100, 200)
+fake_color = Color(1, 0, 0, 1)

@@ -1,0 +1,11 @@
+[gd_resource type="Animation" format=3 uid="uid://test_tres_sub"]
+
+[sub_resource type="Curve" id="Curve_abc"]
+min_value = 0.0
+max_value = 1.0
+
+[sub_resource type="FakeResourceType" id="Fake_xyz"]
+
+[resource]
+resource_name = "test_animation"
+length = 2.0

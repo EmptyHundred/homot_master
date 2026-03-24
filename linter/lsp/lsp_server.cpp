@@ -1,15 +1,17 @@
 /**************************************************************************/
 /*  lsp_server.cpp                                                        */
 /**************************************************************************/
+/*  Unified server — handles both LSP (textDocument/*) and LSPA (api/*,  */
+/*  verify/*) methods in a single dispatch loop.                          */
+/**************************************************************************/
 
 #ifdef HOMOT
 
 #include "lsp_server.h"
 #include "lsp_transport.h"
 
-#include "../stubs/classdb_stub.h"
 #include "../stubs/linterdb.h"
-#include "../stubs/script_server_stub.h"
+#include "../workspace.h"
 
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
@@ -21,7 +23,6 @@
 #include "core/variant/variant.h"
 
 using linter::LinterDB;
-using linter::ScriptServerStub;
 
 namespace lsp {
 
@@ -30,21 +31,15 @@ namespace lsp {
 // ---------------------------------------------------------------------------
 
 String Server::uri_to_path(const String &p_uri) {
-	// file:///C:/foo/bar.gd -> C:/foo/bar.gd
-	// file:///home/user/foo.gd -> /home/user/foo.gd
 	String path = p_uri;
 	if (path.begins_with("file:///")) {
 #ifdef _WIN32
-		// file:///C:/path -> C:/path
 		path = path.substr(8);
 #else
-		// file:///path -> /path
 		path = path.substr(7);
 #endif
 	}
-	// Decode percent-encoded characters.
 	path = path.uri_decode();
-	// Normalize to forward slashes.
 	path = path.replace("\\", "/");
 	return path;
 }
@@ -52,120 +47,15 @@ String Server::uri_to_path(const String &p_uri) {
 String Server::path_to_uri(const String &p_path) {
 	String path = p_path.replace("\\", "/");
 #ifdef _WIN32
-	// C:/foo/bar.gd -> file:///C:/foo/bar.gd
 	return "file:///" + path;
 #else
-	// /home/user/foo.gd -> file:///home/user/foo.gd
 	return "file://" + path;
 #endif
 }
 
 // ---------------------------------------------------------------------------
-// Workspace scanning
+// Workspace scanning (uses workspace:: utilities)
 // ---------------------------------------------------------------------------
-
-static void _collect_scripts_recursive(const String &p_dir, Vector<String> &r_scripts) {
-	Ref<DirAccess> da = DirAccess::open(p_dir);
-	if (da.is_null()) {
-		return;
-	}
-	da->list_dir_begin();
-	String file = da->get_next();
-	while (!file.is_empty()) {
-		if (da->current_is_dir()) {
-			if (file != "." && file != "..") {
-				_collect_scripts_recursive(p_dir.path_join(file), r_scripts);
-			}
-		} else {
-			String ext = file.get_extension().to_lower();
-			if (ext == "gd" || ext == "hm" || ext == "hmc") {
-				r_scripts.push_back(p_dir.path_join(file));
-			}
-		}
-		file = da->get_next();
-	}
-	da->list_dir_end();
-}
-
-static String _extract_class_name(const String &p_source) {
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-
-		if (line_str.begins_with("class_name")) {
-			String rest = line_str.substr(10).strip_edges();
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return String();
-}
-
-static String _extract_extends(const String &p_source) {
-	int pos = 0;
-	for (int line = 0; line < 50 && pos < p_source.length(); line++) {
-		int end = p_source.find("\n", pos);
-		if (end == -1) {
-			end = p_source.length();
-		}
-		String line_str = p_source.substr(pos, end - pos).strip_edges();
-		pos = end + 1;
-
-		if (line_str.begins_with("extends")) {
-			String rest = line_str.substr(7).strip_edges();
-			String name;
-			for (int i = 0; i < rest.length(); i++) {
-				char32_t c = rest[i];
-				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-					name += c;
-				} else {
-					break;
-				}
-			}
-			if (!name.is_empty()) {
-				return name;
-			}
-		}
-	}
-	return "RefCounted";
-}
-
-static StringName _resolve_native_base(const String &p_extends, const HashMap<String, String> &p_class_to_extends) {
-	String current = p_extends;
-	HashSet<String> visited;
-	while (!current.is_empty() && !visited.has(current)) {
-		visited.insert(current);
-		if (ClassDB::class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		LinterDB *db = LinterDB::get_singleton();
-		if (db && db->class_exists(StringName(current))) {
-			return StringName(current);
-		}
-		auto it = p_class_to_extends.find(current);
-		if (it) {
-			current = it->value;
-		} else {
-			break;
-		}
-	}
-	return StringName("RefCounted");
-}
 
 void Server::scan_workspace_classes() {
 	class_to_path.clear();
@@ -176,26 +66,18 @@ void Server::scan_workspace_classes() {
 	}
 
 	Vector<String> scripts;
-	_collect_scripts_recursive(root_path, scripts);
+	workspace::collect_scripts(root_path, scripts);
 
 	for (const String &path : scripts) {
 		String source = FileAccess::get_file_as_string(path);
-		String cname = _extract_class_name(source);
+		String cname = workspace::extract_class_name(source);
 		if (!cname.is_empty()) {
 			class_to_path[cname] = path;
-			class_to_extends[cname] = _extract_extends(source);
+			class_to_extends[cname] = workspace::extract_extends(source);
 		}
 	}
-}
 
-void Server::register_global_classes() {
-	ScriptServerStub::clear();
-	for (const KeyValue<String, String> &kv : class_to_path) {
-		StringName native_base = _resolve_native_base(
-				class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted",
-				class_to_extends);
-		ScriptServerStub::register_global_class(StringName(kv.key), kv.value, native_base);
-	}
+	workspace::register_classes(class_to_path, class_to_extends);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,13 +102,11 @@ void Server::publish_diagnostics(const String &p_uri, const String &p_source) {
 
 	Array diag_array;
 
-	// Collect errors.
 	const List<GDScriptParser::ParserError> &errors = parser.get_errors();
 	for (const GDScriptParser::ParserError &e : errors) {
 		Diagnostic d;
 		d.severity = SEVERITY_ERROR;
 		d.message = e.message;
-		// LSP lines are 0-based; parser lines are 1-based.
 		d.range.start.line = MAX(0, e.line - 1);
 		d.range.start.character = MAX(0, e.column - 1);
 		d.range.end.line = d.range.start.line;
@@ -235,7 +115,6 @@ void Server::publish_diagnostics(const String &p_uri, const String &p_source) {
 	}
 
 #ifdef DEBUG_ENABLED
-	// Collect warnings.
 	const List<GDScriptWarning> &warnings = parser.get_warnings();
 	for (const GDScriptWarning &w : warnings) {
 		Diagnostic d;
@@ -264,6 +143,52 @@ void Server::clear_diagnostics(const String &p_uri) {
 	Transport::write_message(make_notification("textDocument/publishDiagnostics", params));
 }
 
+// Route diagnostics based on file type.
+void Server::publish_diagnostics_for_file(const String &p_uri, const String &p_source) {
+	String path = uri_to_path(p_uri);
+
+	if (workspace::is_script_file(path)) {
+		publish_diagnostics(p_uri, p_source);
+		return;
+	}
+
+	if (p_source.is_empty()) {
+		clear_diagnostics(p_uri);
+		return;
+	}
+
+	Array diag_array;
+
+	if (workspace::is_resource_file(path)) {
+		resource_lint::LintResult res = resource_lint::lint_resource_string(p_source, path);
+		for (const resource_lint::Diagnostic &d : res.diagnostics) {
+			lsp::Diagnostic ld;
+			ld.severity = (d.severity == "error") ? SEVERITY_ERROR : SEVERITY_WARNING;
+			ld.message = d.message;
+			ld.source = "resource";
+			ld.range.start.line = MAX(0, d.line - 1);
+			ld.range.end.line = ld.range.start.line;
+			diag_array.push_back(ld.to_dict());
+		}
+	} else if (workspace::is_shader_file(path)) {
+		shader_lint::LintResult res = shader_lint::lint_shader_string(p_source, path);
+		for (const shader_lint::Diagnostic &d : res.diagnostics) {
+			lsp::Diagnostic ld;
+			ld.severity = (d.severity == "error") ? SEVERITY_ERROR : SEVERITY_WARNING;
+			ld.message = d.message;
+			ld.source = "gdshader";
+			ld.range.start.line = MAX(0, d.line - 1);
+			ld.range.end.line = ld.range.start.line;
+			diag_array.push_back(ld.to_dict());
+		}
+	}
+
+	Dictionary params;
+	params["uri"] = p_uri;
+	params["diagnostics"] = diag_array;
+	Transport::write_message(make_notification("textDocument/publishDiagnostics", params));
+}
+
 // ---------------------------------------------------------------------------
 // Request handlers
 // ---------------------------------------------------------------------------
@@ -288,10 +213,64 @@ Dictionary Server::handle_initialize(const Variant &p_id, const Dictionary &p_pa
 
 	// Scan workspace for global classes.
 	scan_workspace_classes();
-	register_global_classes();
 
 	initialized = true;
-	return make_response(p_id, make_initialize_result());
+
+	// Build unified initialize result with both LSP and LSPA capabilities.
+	Dictionary result = make_initialize_result();
+
+	// Add LSPA capabilities.
+	Dictionary lspa_caps;
+	{
+		Array discover;
+		discover.push_back("class");
+		discover.push_back("classes");
+		discover.push_back("search");
+		discover.push_back("hierarchy");
+		discover.push_back("catalog");
+		discover.push_back("globals");
+		lspa_caps["discover"] = discover;
+	}
+	{
+		Array write;
+		write.push_back("typeof");
+		write.push_back("signature");
+		write.push_back("complete");
+		lspa_caps["write"] = write;
+	}
+	{
+		Array verify;
+		verify.push_back("lint");
+		verify.push_back("check");
+		verify.push_back("contract");
+		lspa_caps["verify"] = verify;
+	}
+	result["lspaCapabilities"] = lspa_caps;
+
+	// Add linterdb stats.
+	LinterDB *db = LinterDB::get_singleton();
+	if (db) {
+		Dictionary stats;
+		LocalVector<StringName> class_list;
+		db->get_class_list(class_list);
+		stats["classes"] = (int)class_list.size();
+
+		LocalVector<String> builtin_list;
+		db->get_builtin_type_list(builtin_list);
+		stats["builtin_types"] = (int)builtin_list.size();
+
+		LocalVector<StringName> singleton_list;
+		db->get_singleton_list(singleton_list);
+		stats["singletons"] = (int)singleton_list.size();
+
+		LocalVector<StringName> uf_list;
+		db->get_utility_function_list(uf_list);
+		stats["utility_functions"] = (int)uf_list.size();
+
+		result["lspaStats"] = stats;
+	}
+
+	return make_response(p_id, result);
 }
 
 void Server::handle_initialized() {
@@ -318,23 +297,24 @@ void Server::handle_did_open(const Dictionary &p_params) {
 	doc.version = td.has("version") ? (int)td["version"] : 0;
 	documents[uri] = doc;
 
-	// Update class registry if this file declares a class_name.
-	String cname = _extract_class_name(text);
-	if (!cname.is_empty()) {
-		String path = uri_to_path(uri);
-		class_to_path[cname] = path;
-		class_to_extends[cname] = _extract_extends(text);
-		register_global_classes();
+	// Update class registry if this file declares a class_name (scripts only).
+	String path = uri_to_path(uri);
+	if (workspace::is_script_file(path)) {
+		String cname = workspace::extract_class_name(text);
+		if (!cname.is_empty()) {
+			class_to_path[cname] = path;
+			class_to_extends[cname] = workspace::extract_extends(text);
+			workspace::register_classes(class_to_path, class_to_extends);
+		}
 	}
 
-	publish_diagnostics(uri, text);
+	publish_diagnostics_for_file(uri, text);
 }
 
 void Server::handle_did_change(const Dictionary &p_params) {
 	Dictionary td = p_params["textDocument"];
 	String uri = td["uri"];
 
-	// Full sync — take the last content change.
 	Array changes = p_params["contentChanges"];
 	if (changes.size() == 0) {
 		return;
@@ -346,16 +326,18 @@ void Server::handle_did_change(const Dictionary &p_params) {
 	doc.content = text;
 	doc.version = td.has("version") ? (int)td["version"] : doc.version + 1;
 
-	// Update class registry.
-	String cname = _extract_class_name(text);
-	if (!cname.is_empty()) {
-		String path = uri_to_path(uri);
-		class_to_path[cname] = path;
-		class_to_extends[cname] = _extract_extends(text);
-		register_global_classes();
+	// Update class registry (scripts only).
+	String path = uri_to_path(uri);
+	if (workspace::is_script_file(path)) {
+		String cname = workspace::extract_class_name(text);
+		if (!cname.is_empty()) {
+			class_to_path[cname] = path;
+			class_to_extends[cname] = workspace::extract_extends(text);
+			workspace::register_classes(class_to_path, class_to_extends);
+		}
 	}
 
-	publish_diagnostics(uri, text);
+	publish_diagnostics_for_file(uri, text);
 }
 
 void Server::handle_did_close(const Dictionary &p_params) {
@@ -369,13 +351,12 @@ void Server::handle_did_save(const Dictionary &p_params) {
 	Dictionary td = p_params["textDocument"];
 	String uri = td["uri"];
 
-	// Re-lint from the in-memory content if we have it, otherwise read from disk.
 	if (documents.has(uri)) {
-		publish_diagnostics(uri, documents[uri].content);
+		publish_diagnostics_for_file(uri, documents[uri].content);
 	} else {
 		String path = uri_to_path(uri);
 		String source = FileAccess::get_file_as_string(path);
-		publish_diagnostics(uri, source);
+		publish_diagnostics_for_file(uri, source);
 	}
 }
 
@@ -386,8 +367,7 @@ void Server::handle_did_change_watched_files(const Dictionary &p_params) {
 		Dictionary change = changes[i];
 		String uri = change["uri"];
 		String path = uri_to_path(uri);
-		String ext = path.get_extension().to_lower();
-		if (ext == "gd" || ext == "hm" || ext == "hmc") {
+		if (workspace::is_lintable_file(path)) {
 			needs_rescan = true;
 			break;
 		}
@@ -398,25 +378,25 @@ void Server::handle_did_change_watched_files(const Dictionary &p_params) {
 
 		// Also pick up class_name from open documents that may not be saved yet.
 		for (const KeyValue<String, DocumentState> &kv : documents) {
-			String cname = _extract_class_name(kv.value.content);
+			String cname = workspace::extract_class_name(kv.value.content);
 			if (!cname.is_empty()) {
 				String path = uri_to_path(kv.value.uri);
 				class_to_path[cname] = path;
-				class_to_extends[cname] = _extract_extends(kv.value.content);
+				class_to_extends[cname] = workspace::extract_extends(kv.value.content);
 			}
 		}
 
-		register_global_classes();
+		workspace::register_classes(class_to_path, class_to_extends);
 
 		// Re-lint all open documents so diagnostics update.
 		for (const KeyValue<String, DocumentState> &kv : documents) {
-			publish_diagnostics(kv.value.uri, kv.value.content);
+			publish_diagnostics_for_file(kv.value.uri, kv.value.content);
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Message dispatch
+// Message dispatch (unified: LSP + LSPA)
 // ---------------------------------------------------------------------------
 
 bool Server::process_message(const Dictionary &p_msg) {
@@ -425,7 +405,7 @@ bool Server::process_message(const Dictionary &p_msg) {
 	Dictionary params = p_msg.get("params", Dictionary());
 	bool has_id = p_msg.has("id");
 
-	// --- Requests (have an id) ---
+	// --- Lifecycle ---
 	if (method == "initialize") {
 		Transport::write_message(handle_initialize(id, params));
 		return true;
@@ -437,7 +417,7 @@ bool Server::process_message(const Dictionary &p_msg) {
 	}
 
 	if (method == "exit") {
-		return false; // Stop the message loop.
+		return false;
 	}
 
 	// Before initialization, reject everything except initialize.
@@ -446,12 +426,13 @@ bool Server::process_message(const Dictionary &p_msg) {
 		return true;
 	}
 
-	// --- Notifications (no id) ---
+	// --- LSP Notifications ---
 	if (method == "initialized") {
 		handle_initialized();
 		return true;
 	}
 
+	// --- LSP Requests (textDocument/*) ---
 	if (method == "textDocument/completion") {
 		Transport::write_message(completion_handler.handle(id, params));
 		return true;
@@ -497,12 +478,61 @@ bool Server::process_message(const Dictionary &p_msg) {
 		return true;
 	}
 
+	// --- LSPA DISCOVER domain (api/*) ---
+	if (method == "api/class") {
+		Transport::write_message(make_response(id, query_engine.handle_class(params)));
+		return true;
+	}
+	if (method == "api/classes") {
+		Transport::write_message(make_response(id, query_engine.handle_classes(params)));
+		return true;
+	}
+	if (method == "api/search") {
+		Transport::write_message(make_response(id, query_engine.handle_search(params)));
+		return true;
+	}
+	if (method == "api/hierarchy") {
+		Transport::write_message(make_response(id, query_engine.handle_hierarchy(params)));
+		return true;
+	}
+	if (method == "api/catalog") {
+		Transport::write_message(make_response(id, query_engine.handle_catalog(params)));
+		return true;
+	}
+	if (method == "api/globals") {
+		Transport::write_message(make_response(id, query_engine.handle_globals(params)));
+		return true;
+	}
+
+	// --- LSPA VERIFY domain (verify/*) ---
+	if (method == "verify/lint") {
+		Transport::write_message(make_response(id, verifier.handle_lint(params)));
+		return true;
+	}
+	if (method == "verify/check") {
+		Transport::write_message(make_response(id, verifier.handle_check(params)));
+		return true;
+	}
+
+	// --- LSPA WRITE domain (code/*) — stubs ---
+	if (method == "code/typeof" || method == "code/signature" || method == "code/complete") {
+		Transport::write_message(make_error_response(id, METHOD_NOT_FOUND,
+				vformat("Method not yet implemented: %s", method)));
+		return true;
+	}
+
+	// --- verify/contract — stub ---
+	if (method == "verify/contract") {
+		Transport::write_message(make_error_response(id, METHOD_NOT_FOUND,
+				vformat("Method not yet implemented: %s", method)));
+		return true;
+	}
+
 	// Unknown request — send MethodNotFound if it has an id.
 	if (has_id) {
 		Transport::write_message(make_error_response(id, METHOD_NOT_FOUND,
 				vformat("Method not found: %s", method)));
 	}
-	// Unknown notifications are silently ignored per LSP spec.
 
 	return true;
 }

@@ -1,0 +1,23 @@
+[gd_scene load_steps=4 format=3 uid="uid://main001"]
+
+[ext_resource type="Script" path="game_manager.gd" id="1_mgr"]
+[ext_resource type="PackedScene" path="player.tscn" id="2_player"]
+[ext_resource type="PackedScene" path="enemy.tscn" id="3_enemy"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_mgr")
+
+[node name="Player" parent="." instance=ExtResource("2_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+
+[node name="Enemies" type="Node" parent="."]
+
+[node name="Enemy1" parent="Enemies" instance=ExtResource("3_enemy")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0)
+
+[node name="Enemy2" parent="Enemies" instance=ExtResource("3_enemy")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10, 0, 5)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
