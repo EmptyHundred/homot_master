@@ -12,6 +12,8 @@
 #include "stubs/linterdb.h"
 #include "stubs/script_server_stub.h"
 
+using linter::LinterDB;
+
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
@@ -186,18 +188,111 @@ void scan_and_register_classes(const Vector<String> &p_script_paths,
 		}
 	}
 
+	// Note: register_classes is additive — it does not clear existing registrations.
+	// Call ScriptServerStub::clear() explicitly before the first scan if needed.
 	register_classes(r_class_to_path, r_class_to_extends);
 }
 
 void register_classes(const HashMap<String, String> &p_class_to_path,
 		const HashMap<String, String> &p_class_to_extends) {
-	ScriptServerStub::clear();
 	for (const KeyValue<String, String> &kv : p_class_to_path) {
 		StringName native_base = resolve_native_base(
 				p_class_to_extends.has(kv.key) ? p_class_to_extends[kv.key] : "RefCounted",
 				p_class_to_extends);
 		ScriptServerStub::register_global_class(StringName(kv.key), kv.value, native_base);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Project context loading
+// ---------------------------------------------------------------------------
+
+Vector<AutoloadEntry> parse_autoloads(const String &p_project_godot_path) {
+	Vector<AutoloadEntry> result;
+
+	String content = FileAccess::get_file_as_string(p_project_godot_path);
+	if (content.is_empty()) {
+		return result;
+	}
+
+	bool in_autoload_section = false;
+	Vector<String> lines = content.split("\n");
+
+	for (const String &raw_line : lines) {
+		String line = raw_line.strip_edges();
+
+		// Section header.
+		if (line.begins_with("[")) {
+			in_autoload_section = (line == "[autoload]");
+			continue;
+		}
+
+		if (!in_autoload_section || line.is_empty() || line.begins_with(";")) {
+			continue;
+		}
+
+		// Format: Name="*res://path/to/script.gd"  or  Name="*uid://..."
+		int eq = line.find("=");
+		if (eq == -1) {
+			continue;
+		}
+
+		String name = line.substr(0, eq).strip_edges();
+		String value = line.substr(eq + 1).strip_edges();
+
+		// Strip quotes.
+		if (value.begins_with("\"") && value.ends_with("\"")) {
+			value = value.substr(1, value.length() - 2);
+		}
+
+		AutoloadEntry entry;
+		entry.name = name;
+
+		// Leading "*" means it's a singleton.
+		if (value.begins_with("*")) {
+			entry.is_singleton = true;
+			value = value.substr(1);
+		}
+
+		// Skip uid:// references — we can't resolve them without the .godot/uid_cache.
+		if (value.begins_with("uid://")) {
+			// Still register the singleton name even if we can't resolve the path.
+			entry.path = "";
+			result.push_back(entry);
+			continue;
+		}
+
+		entry.path = value;
+		result.push_back(entry);
+	}
+
+	return result;
+}
+
+int load_project_context(const String &p_project_root) {
+	// 1. Collect all scripts in the project.
+	Vector<String> scripts;
+	collect_scripts(p_project_root, scripts);
+
+	// 2. Scan and register class_name declarations.
+	HashMap<String, String> class_to_path;
+	HashMap<String, String> class_to_extends;
+	if (!scripts.is_empty()) {
+		scan_and_register_classes(scripts, class_to_path, class_to_extends);
+	}
+
+	// 3. Parse autoloads and register as singletons.
+	String project_godot = p_project_root.path_join("project.godot");
+	Vector<AutoloadEntry> autoloads = parse_autoloads(project_godot);
+
+	LinterDB *db = LinterDB::get_singleton();
+	for (const AutoloadEntry &entry : autoloads) {
+		if (entry.is_singleton && db) {
+			db->add_singleton(StringName(entry.name));
+		}
+	}
+
+	return class_to_path.size();
 }
 
 } // namespace workspace

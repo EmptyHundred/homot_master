@@ -12,6 +12,7 @@
 #include "lsp/lsp_server.h"
 #include "lsp/lsp_transport.h"
 #include "stubs/linterdb.h"
+#include "workspace.h"
 
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_cache.h"
@@ -264,7 +265,33 @@ static bool load_linterdb(const char *db_path_override) {
 // Subcommand: lint
 // ---------------------------------------------------------------------------
 
-static int cmd_lint(int argc, char *argv[], const char *db_override) {
+static void load_project_if_set(const char *project_path) {
+	if (!project_path) {
+		return;
+	}
+
+	String path = String::utf8(project_path);
+	String project_root;
+
+	// Accept either a directory or a project.godot file path.
+	if (path.ends_with("project.godot")) {
+		int last_slash = path.rfind("/");
+		if (last_slash == -1) {
+			last_slash = path.rfind("\\");
+		}
+		project_root = (last_slash != -1) ? path.substr(0, last_slash) : ".";
+	} else {
+		project_root = path;
+	}
+
+	// Set ProjectSettings resource path so res:// resolves correctly.
+	ProjectSettings::get_singleton()->set_resource_path(project_root);
+
+	int count = workspace::load_project_context(project_root);
+	print_line(vformat("Project context loaded: %s (%d global classes registered)", project_root, count));
+}
+
+static int cmd_lint(int argc, char *argv[], const char *db_override, const char *project_path) {
 	static const int MAX_TARGETS = 256;
 	const char *targets[MAX_TARGETS];
 	int target_count = 0;
@@ -296,6 +323,9 @@ static int cmd_lint(int argc, char *argv[], const char *db_override) {
 		return 1;
 	}
 
+	// Load project context (class_names, autoloads) if --project is set.
+	load_project_if_set(project_path);
+
 	// run_lint with empty db_path since DB is already loaded.
 	int result = linter::run_lint(lint_paths, String());
 	return result;
@@ -305,11 +335,14 @@ static int cmd_lint(int argc, char *argv[], const char *db_override) {
 // Subcommand: serve (unified LSP + LSPA server)
 // ---------------------------------------------------------------------------
 
-static int cmd_serve(const char *db_override) {
+static int cmd_serve(const char *db_override, const char *project_path) {
 	if (!load_linterdb(db_override)) {
 		fprintf(stderr, "ERROR: Failed to load linterdb.\n");
 		return 1;
 	}
+
+	// Load project context (class_names, autoloads) if --project is set.
+	load_project_if_set(project_path);
 
 	lsp::Server server;
 	server.set_db_path(String());
@@ -337,12 +370,15 @@ static void print_help() {
 	printf("  lint <path> [<path>...]   Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files\n");
 	printf("  serve                     Start unified Language Server (LSP + LSPA, stdio)\n");
 	printf("\nGlobal Options:\n");
-	printf("  --db <path>    Override embedded linterdb with external JSON file\n");
-	printf("  --help, -h     Show this help message\n");
+	printf("  --db <path>       Override embedded linterdb with external JSON file\n");
+	printf("  --project <path>  Load project context (class_names, autoloads) from a\n");
+	printf("                    Godot project directory or project.godot file\n");
+	printf("  --help, -h        Show this help message\n");
 	printf("\nExamples:\n");
 	printf("  homot lint scripts/\n");
 	printf("  homot serve\n");
 	printf("  homot lint --db custom.json scripts/player.gd\n");
+	printf("  homot lint --project /path/to/godot-project game/scripts/\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +389,7 @@ int main(int argc, char *argv[]) {
 	// Pre-bootstrap CLI parsing (raw C strings only).
 	const char *command = nullptr;
 	const char *db_override = nullptr;
+	const char *project_path = nullptr;
 	int cmd_argc = 0;
 	char **cmd_argv = nullptr;
 
@@ -363,6 +400,8 @@ int main(int argc, char *argv[]) {
 			return 0;
 		} else if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
 			db_override = argv[++i];
+		} else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
+			project_path = argv[++i];
 		} else if (!command) {
 			command = argv[i];
 			// Remaining args go to the subcommand.
@@ -389,9 +428,9 @@ int main(int argc, char *argv[]) {
 	int result = 1;
 
 	if (strcmp(command, "lint") == 0) {
-		result = cmd_lint(cmd_argc, cmd_argv, db_override);
+		result = cmd_lint(cmd_argc, cmd_argv, db_override, project_path);
 	} else if (strcmp(command, "serve") == 0) {
-		result = cmd_serve(db_override);
+		result = cmd_serve(db_override, project_path);
 	} else {
 		fprintf(stderr, "Unknown command: %s\nUse --help for usage information.\n", command);
 	}

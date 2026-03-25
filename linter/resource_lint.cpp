@@ -16,6 +16,7 @@
 #include "resource_lint.h"
 #include "stubs/linterdb.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
@@ -149,13 +150,25 @@ static void _extract_script_exports(const String &p_source, HashSet<String> &r_e
 // Resolve a script path from ext_resource relative to the tscn/tres file.
 static String _resolve_script_path(const String &p_script_path, const String &p_resource_dir) {
 	String script_path = p_script_path;
+	bool had_res_prefix = false;
 	// Strip res:// prefix if present.
 	if (script_path.begins_with("res://")) {
 		script_path = script_path.substr(6);
+		had_res_prefix = true;
 	}
 	// Try as absolute path first.
 	if (FileAccess::exists(script_path)) {
 		return script_path;
+	}
+	// Resolve relative to project root (if --project was set and path was res://).
+	if (had_res_prefix) {
+		String project_root = ProjectSettings::get_singleton()->get_resource_path();
+		if (!project_root.is_empty()) {
+			String resolved = project_root.path_join(script_path);
+			if (FileAccess::exists(resolved)) {
+				return resolved;
+			}
+		}
 	}
 	// Resolve relative to the resource file's directory.
 	if (!p_resource_dir.is_empty()) {

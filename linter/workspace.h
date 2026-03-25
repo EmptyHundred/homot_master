@@ -52,6 +52,21 @@ void scan_and_register_classes(const Vector<String> &p_script_paths,
 void register_classes(const HashMap<String, String> &p_class_to_path,
 		const HashMap<String, String> &p_class_to_extends);
 
+// Autoload entry parsed from project.godot.
+struct AutoloadEntry {
+	String name;
+	String path; // Absolute path to the script/scene.
+	bool is_singleton = false; // true if prefixed with "*".
+};
+
+// Parse project.godot [autoload] section.
+Vector<AutoloadEntry> parse_autoloads(const String &p_project_godot_path);
+
+// Load project context: scan all scripts, register class_names and autoloads.
+// p_project_root is the directory containing project.godot.
+// Returns the number of global classes registered.
+int load_project_context(const String &p_project_root);
+
 } // namespace workspace
 
 #endif // HOMOT

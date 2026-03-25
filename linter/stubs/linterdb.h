@@ -221,6 +221,7 @@ public:
 
 	// Singleton queries.
 	bool has_singleton(const StringName &p_name) const;
+	void add_singleton(const StringName &p_name);
 
 	// Documentation queries.
 	const DocClassData *get_class_doc(const StringName &p_class) const;

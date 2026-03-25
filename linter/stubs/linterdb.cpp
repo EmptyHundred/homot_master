@@ -776,6 +776,10 @@ bool LinterDB::has_singleton(const StringName &p_name) const {
 	return singletons.has(p_name);
 }
 
+void LinterDB::add_singleton(const StringName &p_name) {
+	singletons.insert(p_name);
+}
+
 // --- Listing ---
 
 void LinterDB::get_class_list(LocalVector<StringName> &r_classes) const {
