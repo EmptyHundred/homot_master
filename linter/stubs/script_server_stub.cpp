@@ -39,6 +39,16 @@ StringName ScriptServerStub::get_global_class_native_base(const StringName &p_cl
 	return it ? it->value : StringName();
 }
 
+void ScriptServerStub::get_global_class_list(LocalVector<StringName> &r_list) {
+	for (const KeyValue<StringName, String> &kv : global_classes) {
+		r_list.push_back(kv.key);
+	}
+}
+
+int ScriptServerStub::get_global_class_count() {
+	return global_classes.size();
+}
+
 } // namespace linter
 
 #endif // HOMOT

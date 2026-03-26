@@ -12,6 +12,7 @@
 
 #include "core/string/string_name.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/local_vector.h"
 
 namespace linter {
 
@@ -29,6 +30,8 @@ public:
 	static bool is_global_class(const StringName &p_class);
 	static String get_global_class_path(const StringName &p_class);
 	static StringName get_global_class_native_base(const StringName &p_class);
+	static void get_global_class_list(LocalVector<StringName> &r_list);
+	static int get_global_class_count();
 };
 
 } // namespace linter

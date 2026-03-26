@@ -265,7 +265,30 @@ static bool load_linterdb(const char *db_path_override) {
 // Subcommand: lint
 // ---------------------------------------------------------------------------
 
-static void load_project_if_set(const char *project_path) {
+static void load_project_if_set(const char *project_path, const char *project_db_path) {
+	if (project_db_path) {
+		String db_path = String::utf8(project_db_path);
+		// If --project is also set, use it as root override for path remapping.
+		String root_override;
+		if (project_path) {
+			root_override = String::utf8(project_path);
+			if (root_override.ends_with("project.godot")) {
+				int last_slash = root_override.rfind("/");
+				if (last_slash == -1) {
+					last_slash = root_override.rfind("\\");
+				}
+				root_override = (last_slash != -1) ? root_override.substr(0, last_slash) : ".";
+			}
+		}
+		int count = workspace::load_project_db(db_path, root_override);
+		if (count < 0) {
+			fprintf(stderr, "WARNING: Failed to load project-db: %s\n", project_db_path);
+		} else {
+			print_line(vformat("Project classdb loaded: %s (%d global classes registered)", db_path, count));
+		}
+		return;
+	}
+
 	if (!project_path) {
 		return;
 	}
@@ -291,7 +314,7 @@ static void load_project_if_set(const char *project_path) {
 	print_line(vformat("Project context loaded: %s (%d global classes registered)", project_root, count));
 }
 
-static int cmd_lint(int argc, char *argv[], const char *db_override, const char *project_path) {
+static int cmd_lint(int argc, char *argv[], const char *db_override, const char *project_path, const char *project_db_path) {
 	static const int MAX_TARGETS = 256;
 	const char *targets[MAX_TARGETS];
 	int target_count = 0;
@@ -323,8 +346,8 @@ static int cmd_lint(int argc, char *argv[], const char *db_override, const char 
 		return 1;
 	}
 
-	// Load project context (class_names, autoloads) if --project is set.
-	load_project_if_set(project_path);
+	// Load project context (class_names, autoloads) if --project or --project-db is set.
+	load_project_if_set(project_path, project_db_path);
 
 	// run_lint with empty db_path since DB is already loaded.
 	int result = linter::run_lint(lint_paths, String());
@@ -332,17 +355,61 @@ static int cmd_lint(int argc, char *argv[], const char *db_override, const char 
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand: serve (unified LSP + LSPA server)
+// Subcommand: dump-project
 // ---------------------------------------------------------------------------
 
-static int cmd_serve(const char *db_override, const char *project_path) {
+static int cmd_dump_project(int argc, char *argv[], const char *db_override) {
+	const char *project_dir = nullptr;
+	const char *output_path = nullptr;
+
+	for (int i = 0; i < argc; i++) {
+		if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) && i + 1 < argc) {
+			output_path = argv[++i];
+		} else if (argv[i][0] == '-') {
+			fprintf(stderr, "Unknown dump-project option: %s\n", argv[i]);
+			return 1;
+		} else if (!project_dir) {
+			project_dir = argv[i];
+		}
+	}
+
+	if (!project_dir) {
+		fprintf(stderr, "ERROR: No project directory specified.\nUsage: homot dump-project <project-dir> [-o output.json]\n");
+		return 1;
+	}
+
+	// Default output filename.
+	String output = output_path ? String::utf8(output_path) : String("project_classdb.json");
+
+	// Load engine DB so we can resolve native bases.
 	if (!load_linterdb(db_override)) {
 		fprintf(stderr, "ERROR: Failed to load linterdb.\n");
 		return 1;
 	}
 
-	// Load project context (class_names, autoloads) if --project is set.
-	load_project_if_set(project_path);
+	String project_root = String::utf8(project_dir);
+	Error err = workspace::dump_project_classdb(project_root, output);
+	if (err != OK) {
+		fprintf(stderr, "ERROR: Failed to write project classdb to: %s\n", output.utf8().get_data());
+		return 1;
+	}
+
+	print_line(vformat("Project classdb exported to: %s", output));
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: serve (unified LSP + LSPA server)
+// ---------------------------------------------------------------------------
+
+static int cmd_serve(const char *db_override, const char *project_path, const char *project_db_path) {
+	if (!load_linterdb(db_override)) {
+		fprintf(stderr, "ERROR: Failed to load linterdb.\n");
+		return 1;
+	}
+
+	// Load project context (class_names, autoloads) if --project or --project-db is set.
+	load_project_if_set(project_path, project_db_path);
 
 	lsp::Server server;
 	server.set_db_path(String());
@@ -367,18 +434,24 @@ static int cmd_serve(const char *db_override, const char *project_path) {
 static void print_help() {
 	printf("Usage: homot <command> [options] [args...]\n\n");
 	printf("Commands:\n");
-	printf("  lint <path> [<path>...]   Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files\n");
-	printf("  serve                     Start unified Language Server (LSP + LSPA, stdio)\n");
+	printf("  lint <path> [<path>...]               Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files\n");
+	printf("  serve                                  Start unified Language Server (LSP + LSPA, stdio)\n");
+	printf("  dump-project <dir> [-o output.json]    Export project class info to JSON\n");
 	printf("\nGlobal Options:\n");
-	printf("  --db <path>       Override embedded linterdb with external JSON file\n");
-	printf("  --project <path>  Load project context (class_names, autoloads) from a\n");
-	printf("                    Godot project directory or project.godot file\n");
-	printf("  --help, -h        Show this help message\n");
+	printf("  --db <path>           Override embedded linterdb with external JSON file\n");
+	printf("  --project <path>      Load project context (class_names, autoloads) from a\n");
+	printf("                        Godot project directory or project.godot file\n");
+	printf("  --project-db <path>   Load project class info from a previously exported JSON\n");
+	printf("                        (created by dump-project). Can combine with --project\n");
+	printf("                        for path remapping.\n");
+	printf("  --help, -h            Show this help message\n");
 	printf("\nExamples:\n");
 	printf("  homot lint scripts/\n");
 	printf("  homot serve\n");
 	printf("  homot lint --db custom.json scripts/player.gd\n");
-	printf("  homot lint --project /path/to/godot-project game/scripts/\n");
+	printf("  homot lint --project /path/to/godot-project dynamic_scripts/\n");
+	printf("  homot dump-project /path/to/godot-project -o base_classdb.json\n");
+	printf("  homot lint --project-db base_classdb.json dynamic_scripts/\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +463,7 @@ int main(int argc, char *argv[]) {
 	const char *command = nullptr;
 	const char *db_override = nullptr;
 	const char *project_path = nullptr;
+	const char *project_db_path = nullptr;
 	int cmd_argc = 0;
 	char **cmd_argv = nullptr;
 
@@ -402,6 +476,8 @@ int main(int argc, char *argv[]) {
 			db_override = argv[++i];
 		} else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
 			project_path = argv[++i];
+		} else if (strcmp(argv[i], "--project-db") == 0 && i + 1 < argc) {
+			project_db_path = argv[++i];
 		} else if (!command) {
 			command = argv[i];
 			// Remaining args go to the subcommand.
@@ -428,9 +504,11 @@ int main(int argc, char *argv[]) {
 	int result = 1;
 
 	if (strcmp(command, "lint") == 0) {
-		result = cmd_lint(cmd_argc, cmd_argv, db_override, project_path);
+		result = cmd_lint(cmd_argc, cmd_argv, db_override, project_path, project_db_path);
 	} else if (strcmp(command, "serve") == 0) {
-		result = cmd_serve(db_override, project_path);
+		result = cmd_serve(db_override, project_path, project_db_path);
+	} else if (strcmp(command, "dump-project") == 0) {
+		result = cmd_dump_project(cmd_argc, cmd_argv, db_override);
 	} else {
 		fprintf(stderr, "Unknown command: %s\nUse --help for usage information.\n", command);
 	}

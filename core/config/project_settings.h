@@ -185,6 +185,9 @@ public:
 	String get_project_data_dir_name() const;
 	String get_project_data_path() const;
 	String get_resource_path() const;
+#ifdef HOMOT
+	void set_resource_path(const String &p_path) { resource_path = p_path; }
+#endif
 	String get_imported_files_path() const;
 
 	static ProjectSettings *get_singleton();

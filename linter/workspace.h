@@ -67,6 +67,16 @@ Vector<AutoloadEntry> parse_autoloads(const String &p_project_godot_path);
 // Returns the number of global classes registered.
 int load_project_context(const String &p_project_root);
 
+// Export project class information to a JSON file.
+// Scans all scripts for class_name declarations, resolves native bases,
+// and includes autoload singletons from project.godot.
+Error dump_project_classdb(const String &p_project_root, const String &p_output_path);
+
+// Load a previously exported project classdb JSON and register all classes
+// and autoloads. Equivalent to --project but from a cached file.
+// If p_project_root_override is non-empty, script paths are rebased to it.
+int load_project_db(const String &p_json_path, const String &p_project_root_override = String());
+
 } // namespace workspace
 
 #endif // HOMOT

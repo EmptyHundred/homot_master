@@ -7,12 +7,14 @@
 #include "lspa_server.h"
 
 #include "../stubs/linterdb.h"
+#include "../stubs/script_server_stub.h"
 
 // Reuse JSON-RPC transport and protocol helpers from the LSP implementation.
 #include "../lsp/lsp_protocol.h"
 #include "../lsp/lsp_transport.h"
 
 using linter::LinterDB;
+using linter::ScriptServerStub;
 
 namespace lspa {
 
@@ -91,6 +93,11 @@ Dictionary Server::handle_initialize(const Variant &p_id) {
 		LocalVector<StringName> uf_list;
 		db->get_utility_function_list(uf_list);
 		stats["utility_functions"] = (int)uf_list.size();
+	}
+
+	int script_class_count = ScriptServerStub::get_global_class_count();
+	if (script_class_count > 0) {
+		stats["script_classes"] = script_class_count;
 	}
 
 	Dictionary result;

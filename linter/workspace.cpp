@@ -14,8 +14,10 @@
 
 using linter::LinterDB;
 
+#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/object/class_db.h"
 
 using linter::LinterDB;
@@ -289,6 +291,144 @@ int load_project_context(const String &p_project_root) {
 	for (const AutoloadEntry &entry : autoloads) {
 		if (entry.is_singleton && db) {
 			db->add_singleton(StringName(entry.name));
+		}
+	}
+
+	return class_to_path.size();
+}
+
+// ---------------------------------------------------------------------------
+// Project classdb export (dump-project)
+// ---------------------------------------------------------------------------
+
+Error dump_project_classdb(const String &p_project_root, const String &p_output_path) {
+	// 1. Collect all scripts.
+	Vector<String> scripts;
+	collect_scripts(p_project_root, scripts);
+
+	// 2. Scan class_name + extends.
+	HashMap<String, String> class_to_path;
+	HashMap<String, String> class_to_extends;
+	if (!scripts.is_empty()) {
+		for (const String &path : scripts) {
+			String source = FileAccess::get_file_as_string(path);
+			String cname = extract_class_name(source);
+			if (!cname.is_empty()) {
+				class_to_path[cname] = path;
+				class_to_extends[cname] = extract_extends(source);
+			}
+		}
+	}
+
+	// 3. Resolve native bases (needs LinterDB loaded for engine class lookup).
+	Dictionary classes_dict;
+	for (const KeyValue<String, String> &kv : class_to_path) {
+		Dictionary cls;
+		cls["path"] = kv.value;
+		String extends_name = class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted";
+		cls["extends"] = extends_name;
+		cls["native_base"] = String(resolve_native_base(extends_name, class_to_extends));
+		classes_dict[kv.key] = cls;
+	}
+
+	// 4. Parse autoloads.
+	String project_godot = p_project_root.path_join("project.godot");
+	Vector<AutoloadEntry> autoloads = parse_autoloads(project_godot);
+
+	Array autoloads_arr;
+	for (const AutoloadEntry &entry : autoloads) {
+		Dictionary al;
+		al["name"] = entry.name;
+		al["path"] = entry.path;
+		al["is_singleton"] = entry.is_singleton;
+		autoloads_arr.push_back(al);
+	}
+
+	// 5. Build root dict.
+	Dictionary root;
+	root["format_version"] = 1;
+	root["project_root"] = p_project_root;
+	root["classes"] = classes_dict;
+	root["autoloads"] = autoloads_arr;
+
+	// 6. Write JSON.
+	String json_text = JSON::stringify(root, "\t");
+	Ref<FileAccess> f = FileAccess::open(p_output_path, FileAccess::WRITE);
+	if (f.is_null()) {
+		return ERR_CANT_CREATE;
+	}
+	f->store_string(json_text);
+	return OK;
+}
+
+// ---------------------------------------------------------------------------
+// Project classdb import (--project-db)
+// ---------------------------------------------------------------------------
+
+int load_project_db(const String &p_json_path, const String &p_project_root_override) {
+	String json_text = FileAccess::get_file_as_string(p_json_path);
+	if (json_text.is_empty()) {
+		return -1;
+	}
+
+	JSON json;
+	Error err = json.parse(json_text);
+	if (err != OK) {
+		return -1;
+	}
+
+	Dictionary root = json.get_data();
+	if (!root.has("classes")) {
+		return -1;
+	}
+
+	// Determine project root for path resolution.
+	String original_root = root.get("project_root", "");
+	String effective_root = p_project_root_override.is_empty() ? original_root : p_project_root_override;
+
+	// Set resource path so res:// resolves correctly.
+	if (!effective_root.is_empty()) {
+		ProjectSettings::get_singleton()->set_resource_path(effective_root);
+	}
+
+	// Register classes.
+	Dictionary classes_dict = root["classes"];
+	HashMap<String, String> class_to_path;
+	HashMap<String, String> class_to_extends;
+
+	LocalVector<Variant> keys = classes_dict.get_key_list();
+	for (const Variant &key : keys) {
+		String class_name = key;
+		Dictionary cls = classes_dict[key];
+
+		String path = cls.get("path", "");
+		String extends_name = cls.get("extends", "RefCounted");
+		String native_base = cls.get("native_base", "RefCounted");
+
+		// Remap path if project root changed.
+		if (!p_project_root_override.is_empty() && !original_root.is_empty() && !path.is_empty()) {
+			if (path.begins_with(original_root)) {
+				path = effective_root.path_join(path.substr(original_root.length()));
+			}
+		}
+
+		class_to_path[class_name] = path;
+		class_to_extends[class_name] = extends_name;
+
+		ScriptServerStub::register_global_class(StringName(class_name), path, StringName(native_base));
+	}
+
+	// Register autoloads.
+	if (root.has("autoloads")) {
+		Array autoloads_arr = root["autoloads"];
+		LinterDB *db = LinterDB::get_singleton();
+		for (int i = 0; i < autoloads_arr.size(); i++) {
+			Dictionary al = autoloads_arr[i];
+			String name = al.get("name", "");
+			bool is_singleton = al.get("is_singleton", false);
+			if (is_singleton && db && !name.is_empty()) {
+				db->add_singleton(StringName(name));
+			}
 		}
 	}
 

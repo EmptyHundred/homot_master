@@ -24,6 +24,13 @@ homot serve
 
 # Override embedded database
 homot --db custom_linterdb.json lint scripts/
+
+# Lint with base project context (live scan)
+homot lint --project /path/to/base-project dynamic_scripts/
+
+# Export base project class info, then lint with it
+homot dump-project /path/to/base-project -o base_classdb.json
+homot lint --project-db base_classdb.json dynamic_scripts/
 ```
 
 ## Command-Line Reference
@@ -32,12 +39,17 @@ homot --db custom_linterdb.json lint scripts/
 Usage: homot <command> [options] [args...]
 
 Commands:
-  lint <path> [<path>...]   Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files
-  serve                     Start unified Language Server (LSP + LSPA, stdio)
+  lint <path> [<path>...]               Lint .gd/.hm/.hmc/.tscn/.tres/.gdshader files
+  serve                                  Start unified Language Server (LSP + LSPA, stdio)
+  dump-project <dir> [-o output.json]    Export project class info to JSON
 
 Global Options:
-  --db <path>    Override embedded linterdb with external JSON file
-  --help, -h     Show this help message
+  --db <path>           Override embedded linterdb with external JSON file
+  --project <path>      Load project context (class_names, autoloads) from a
+                        Godot project directory or project.godot file
+  --project-db <path>   Load project class info from a previously exported JSON
+                        (created by dump-project)
+  --help, -h            Show this help message
 ```
 
 ### Exit Codes
@@ -287,15 +299,75 @@ homot (single binary, ~18 MB)
 ├── Embedded linterdb (~2 MB compressed, ~18 MB decompressed)
 ├── Engine bootstrap (minimal OS, core types, GDScript module)
 ├── Subcommand: lint → linter_run.cpp + resource_lint.cpp + shader_lint.cpp
-└── Subcommand: serve → lsp/lsp_server.cpp (unified LSP + LSPA dispatch)
-    ├── LSP handlers: completion, definition, hover, signature_help
-    └── LSPA handlers: lspa/query_engine.cpp, lspa/verifier.cpp, lspa/formatter.cpp
+├── Subcommand: serve → lsp/lsp_server.cpp (unified LSP + LSPA dispatch)
+│   ├── LSP handlers: completion, definition, hover, signature_help
+│   └── LSPA handlers: lspa/query_engine.cpp, lspa/verifier.cpp, lspa/formatter.cpp
+└── Subcommand: dump-project → workspace.cpp (project classdb export)
 ```
+
+## Project ClassDB Export / Import
+
+When linting dynamic scripts that run on top of a base Godot project, the linter needs knowledge of the base project's classes. Two approaches are available:
+
+### Approach 1: Live scan with `--project`
+
+```bash
+homot lint --project /path/to/base-project dynamic_scripts/
+```
+
+This scans the base project directory on every invocation, extracting `class_name` declarations and autoload singletons.
+
+### Approach 2: Cached export with `dump-project` + `--project-db`
+
+```bash
+# One-time: export base project class info
+homot dump-project /path/to/base-project -o base_classdb.json
+
+# Every time: lint with the exported info
+homot lint --project-db base_classdb.json dynamic_scripts/
+
+# Also works with serve:
+homot serve --project-db base_classdb.json
+```
+
+This is useful when:
+- The base project is large and re-scanning is slow
+- You want reproducible CI builds with a checked-in classdb
+- The base project isn't always available at the same path
+
+### Path remapping
+
+If the base project moved since the export, combine `--project` with `--project-db` to remap paths:
+
+```bash
+homot lint --project-db base_classdb.json --project /new/path/to/base-project dynamic_scripts/
+```
+
+### Exported JSON format
+
+```json
+{
+  "format_version": 1,
+  "project_root": "/original/path/to/project",
+  "classes": {
+    "MyClass": {
+      "path": "/original/path/to/project/scripts/my_class.gd",
+      "extends": "Node3D",
+      "native_base": "Node3D"
+    }
+  },
+  "autoloads": [
+    { "name": "GameManager", "path": "res://autoloads/game_manager.gd", "is_singleton": true }
+  ]
+}
+```
+
+---
 
 ## Known Limitations
 
 - **No `preload()`/`load()` resolution** — Resources cannot be loaded at lint time. Scripts using `preload()` for type references may produce false positives.
-- **No autoloads** — Project autoload singletons are not registered. References to autoloads will be unresolved.
+- **Autoloads require `--project` or `--project-db`** — Without these flags, autoload singletons are not registered and references will be unresolved.
 - **No GDExtension classes** — Only classes present in the engine at `--dump-linterdb` time are available.
 - **Resource lint: property false positives** — Some dynamically-added properties (e.g. from mixins or runtime-registered classes) may trigger false "property not found" warnings in `.tscn`/`.tres` files.
 - **Shader lint: syntax only** — The `.gdshader` linter performs structural checks only (Phase 1). Full semantic analysis (built-in variable types, function signatures) requires RenderingServer integration.
