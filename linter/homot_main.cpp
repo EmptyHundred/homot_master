@@ -268,50 +268,32 @@ static bool load_linterdb(const char *db_path_override) {
 static void load_project_if_set(const char *project_path, const char *project_db_path) {
 	if (project_db_path) {
 		String db_path = String::utf8(project_db_path);
-		// If --project is also set, use it as root override for path remapping.
-		String root_override;
-		if (project_path) {
-			root_override = String::utf8(project_path);
-			if (root_override.ends_with("project.godot")) {
-				int last_slash = root_override.rfind("/");
-				if (last_slash == -1) {
-					last_slash = root_override.rfind("\\");
-				}
-				root_override = (last_slash != -1) ? root_override.substr(0, last_slash) : ".";
-			}
-		}
-		int count = workspace::load_project_db(db_path, root_override);
+		int count = workspace::load_project_db(db_path);
 		if (count < 0) {
 			fprintf(stderr, "WARNING: Failed to load project-db: %s\n", project_db_path);
 		} else {
-			print_line(vformat("Project classdb loaded: %s (%d global classes registered)", db_path, count));
+			print_line(vformat("Project classdb loaded: %s (%d classes merged into classdb)", db_path, count));
 		}
-		return;
 	}
 
-	if (!project_path) {
-		return;
-	}
+	if (project_path) {
+		String path = String::utf8(project_path);
+		String project_root;
 
-	String path = String::utf8(project_path);
-	String project_root;
-
-	// Accept either a directory or a project.godot file path.
-	if (path.ends_with("project.godot")) {
-		int last_slash = path.rfind("/");
-		if (last_slash == -1) {
-			last_slash = path.rfind("\\");
+		// Accept either a directory or a project.godot file path.
+		if (path.ends_with("project.godot")) {
+			int last_slash = path.rfind("/");
+			if (last_slash == -1) {
+				last_slash = path.rfind("\\");
+			}
+			project_root = (last_slash != -1) ? path.substr(0, last_slash) : ".";
+		} else {
+			project_root = path;
 		}
-		project_root = (last_slash != -1) ? path.substr(0, last_slash) : ".";
-	} else {
-		project_root = path;
+
+		int count = workspace::load_project_context(project_root);
+		print_line(vformat("Project context loaded: %s (%d global classes registered)", project_root, count));
 	}
-
-	// Set ProjectSettings resource path so res:// resolves correctly.
-	ProjectSettings::get_singleton()->set_resource_path(project_root);
-
-	int count = workspace::load_project_context(project_root);
-	print_line(vformat("Project context loaded: %s (%d global classes registered)", project_root, count));
 }
 
 static int cmd_lint(int argc, char *argv[], const char *db_override, const char *project_path, const char *project_db_path) {
@@ -442,8 +424,8 @@ static void print_help() {
 	printf("  --project <path>      Load project context (class_names, autoloads) from a\n");
 	printf("                        Godot project directory or project.godot file\n");
 	printf("  --project-db <path>   Load project class info from a previously exported JSON\n");
-	printf("                        (created by dump-project). Can combine with --project\n");
-	printf("                        for path remapping.\n");
+	printf("                        (created by dump-project). Self-contained, no need for\n");
+	printf("                        the original project scripts.\n");
 	printf("  --help, -h            Show this help message\n");
 	printf("\nExamples:\n");
 	printf("  homot lint scripts/\n");

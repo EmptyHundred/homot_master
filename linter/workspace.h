@@ -72,10 +72,9 @@ int load_project_context(const String &p_project_root);
 // and includes autoload singletons from project.godot.
 Error dump_project_classdb(const String &p_project_root, const String &p_output_path);
 
-// Load a previously exported project classdb JSON and register all classes
-// and autoloads. Equivalent to --project but from a cached file.
-// If p_project_root_override is non-empty, script paths are rebased to it.
-int load_project_db(const String &p_json_path, const String &p_project_root_override = String());
+// Load a previously exported project classdb JSON and merge all classes
+// into the LinterDB. Self-contained — no original scripts needed.
+int load_project_db(const String &p_json_path);
 
 } // namespace workspace
 

@@ -498,6 +498,96 @@ Error LinterDB::load_from_compressed(const uint8_t *p_data, uint32_t p_compresse
 	return _load_from_dict(json.get_data());
 }
 
+Error LinterDB::load_additional_classes(const Dictionary &p_root) {
+	// Merge classes (same format as linterdb.json "classes" section).
+	Dictionary classes_dict = p_root.get("classes", Dictionary());
+	LocalVector<Variant> class_names = classes_dict.get_key_list();
+
+	for (const Variant &key : class_names) {
+		String class_name_str = key;
+		Dictionary cls = classes_dict[key];
+
+		ClassData cd;
+		cd.name = StringName(class_name_str);
+		cd.parent = StringName(String(cls.get("parent", "")));
+		cd.is_abstract = cls.get("is_abstract", false);
+
+		// Methods.
+		{
+			Array methods_arr = cls.get("methods", Array());
+			for (int i = 0; i < methods_arr.size(); i++) {
+				Dictionary md = methods_arr[i];
+				MethodData method;
+				method.info = _parse_method_info(md);
+				method.is_vararg = md.get("is_vararg", false);
+				method.is_static = md.get("is_static", false);
+				method.instance_class = StringName(String(md.get("instance_class", class_name_str)));
+				cd.methods[StringName(method.info.name)] = method;
+			}
+		}
+
+		// Properties.
+		{
+			Array props_arr = cls.get("properties", Array());
+			for (int i = 0; i < props_arr.size(); i++) {
+				Dictionary pd = props_arr[i];
+				PropertyData prop;
+				prop.info = _parse_property_info(pd);
+				prop.getter = StringName(String(pd.get("getter", "")));
+				prop.setter = StringName(String(pd.get("setter", "")));
+				cd.properties[StringName(prop.info.name)] = prop;
+			}
+		}
+
+		// Signals.
+		{
+			Array signals_arr = cls.get("signals", Array());
+			for (int i = 0; i < signals_arr.size(); i++) {
+				MethodInfo si = _parse_method_info(signals_arr[i]);
+				cd.signals[StringName(si.name)] = si;
+			}
+		}
+
+		// Enums.
+		{
+			Dictionary enums_dict = cls.get("enums", Dictionary());
+			LocalVector<Variant> enum_keys = enums_dict.get_key_list();
+			for (const Variant &ek : enum_keys) {
+				StringName enum_name = StringName(String(ek));
+				Dictionary values = enums_dict[ek];
+				HashMap<StringName, int64_t> enum_values;
+				LocalVector<Variant> value_keys = values.get_key_list();
+				for (const Variant &vk : value_keys) {
+					StringName const_name = StringName(String(vk));
+					int64_t val = values[vk];
+					enum_values[const_name] = val;
+					cd.constant_to_enum[const_name] = enum_name;
+				}
+				cd.enums[enum_name] = enum_values;
+			}
+		}
+
+		// Constants.
+		{
+			Dictionary consts = cls.get("constants", Dictionary());
+			LocalVector<Variant> const_keys = consts.get_key_list();
+			for (const Variant &ck : const_keys) {
+				cd.constants[StringName(String(ck))] = (int64_t)consts[ck];
+			}
+		}
+
+		classes[cd.name] = cd;
+	}
+
+	// Merge singletons.
+	Array singleton_arr = p_root.get("singletons", Array());
+	for (int i = 0; i < singleton_arr.size(); i++) {
+		singletons.insert(StringName(String(singleton_arr[i])));
+	}
+
+	return OK;
+}
+
 // --- Class queries ---
 
 bool LinterDB::class_exists(const StringName &p_class) const {

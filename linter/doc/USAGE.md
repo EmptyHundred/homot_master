@@ -331,34 +331,36 @@ homot serve --project-db base_classdb.json
 ```
 
 This is useful when:
-- The base project is large and re-scanning is slow
+- The base project is large and re-scanning/re-parsing is slow
 - You want reproducible CI builds with a checked-in classdb
-- The base project isn't always available at the same path
-
-### Path remapping
-
-If the base project moved since the export, combine `--project` with `--project-db` to remap paths:
-
-```bash
-homot lint --project-db base_classdb.json --project /new/path/to/base-project dynamic_scripts/
-```
+- The original project scripts are not available at lint time
+- The exported JSON is self-contained — no dependency on original script files
 
 ### Exported JSON format
+
+The exported JSON uses the same format as the engine's `linterdb.json`, so classes are merged directly into the class database. Each class includes full method signatures, property types, signals, enums, and constants extracted by parsing the GDScript source.
 
 ```json
 {
   "format_version": 1,
-  "project_root": "/original/path/to/project",
   "classes": {
     "MyClass": {
-      "path": "/original/path/to/project/scripts/my_class.gd",
-      "extends": "Node3D",
-      "native_base": "Node3D"
+      "parent": "Node3D",
+      "is_abstract": false,
+      "methods": [
+        { "name": "my_method", "return_val": {"type": 0}, "flags": 1, "args": [...], "default_arg_count": 0 }
+      ],
+      "properties": [
+        { "type": 4, "name": "speed", "hint": 0 }
+      ],
+      "signals": [
+        { "name": "health_changed", "return_val": {"type": 0}, "flags": 1, "args": [...] }
+      ],
+      "enums": { "State": { "IDLE": 0, "RUNNING": 1 } },
+      "constants": { "MAX_HP": 100 }
     }
   },
-  "autoloads": [
-    { "name": "GameManager", "path": "res://autoloads/game_manager.gd", "is_singleton": true }
-  ]
+  "singletons": ["GameManager"]
 }
 ```
 

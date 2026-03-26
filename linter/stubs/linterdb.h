@@ -190,6 +190,11 @@ public:
 	Error load_from_json(const String &p_path);
 	Error load_from_compressed(const uint8_t *p_data, uint32_t p_compressed_size, uint32_t p_uncompressed_size);
 
+	// Merge additional classes (e.g. from a project classdb export) into the database.
+	// The dictionary should have the same format as the "classes" key in linterdb.json.
+	// Also accepts optional "singletons" array.
+	Error load_additional_classes(const Dictionary &p_root);
+
 	// Class queries.
 	bool class_exists(const StringName &p_class) const;
 	const ClassData *get_class_data(const StringName &p_class) const;

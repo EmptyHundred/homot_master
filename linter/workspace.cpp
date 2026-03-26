@@ -12,13 +12,13 @@
 #include "stubs/linterdb.h"
 #include "stubs/script_server_stub.h"
 
-using linter::LinterDB;
-
-#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
 #include "core/object/class_db.h"
+
+#include "modules/gdscript/gdscript_analyzer.h"
+#include "modules/gdscript/gdscript_parser.h"
 
 using linter::LinterDB;
 using linter::ScriptServerStub;
@@ -298,6 +298,46 @@ int load_project_context(const String &p_project_root) {
 }
 
 // ---------------------------------------------------------------------------
+// JSON serialization helpers (same format as linterdb.json)
+// ---------------------------------------------------------------------------
+
+static Dictionary _property_info_to_dict(const PropertyInfo &p_info) {
+	Dictionary d;
+	d["type"] = (int)p_info.type;
+	if (!p_info.name.is_empty()) {
+		d["name"] = p_info.name;
+	}
+	if (!p_info.class_name.is_empty()) {
+		d["class_name"] = String(p_info.class_name);
+	}
+	if (p_info.hint != PROPERTY_HINT_NONE) {
+		d["hint"] = (int)p_info.hint;
+	}
+	if (!p_info.hint_string.is_empty()) {
+		d["hint_string"] = p_info.hint_string;
+	}
+	if (p_info.usage != PROPERTY_USAGE_DEFAULT) {
+		d["usage"] = (int)p_info.usage;
+	}
+	return d;
+}
+
+static Dictionary _method_info_to_dict(const MethodInfo &p_info) {
+	Dictionary d;
+	d["name"] = p_info.name;
+	d["return_val"] = _property_info_to_dict(p_info.return_val);
+	d["flags"] = (int)p_info.flags;
+
+	Array args;
+	for (int i = 0; i < p_info.arguments.size(); i++) {
+		args.push_back(_property_info_to_dict(p_info.arguments[i]));
+	}
+	d["args"] = args;
+	d["default_arg_count"] = p_info.default_arguments.size();
+	return d;
+}
+
+// ---------------------------------------------------------------------------
 // Project classdb export (dump-project)
 // ---------------------------------------------------------------------------
 
@@ -306,50 +346,190 @@ Error dump_project_classdb(const String &p_project_root, const String &p_output_
 	Vector<String> scripts;
 	collect_scripts(p_project_root, scripts);
 
-	// 2. Scan class_name + extends.
+	// 2. Pre-scan: extract class_name + extends for all scripts.
 	HashMap<String, String> class_to_path;
 	HashMap<String, String> class_to_extends;
 	if (!scripts.is_empty()) {
-		for (const String &path : scripts) {
-			String source = FileAccess::get_file_as_string(path);
-			String cname = extract_class_name(source);
-			if (!cname.is_empty()) {
-				class_to_path[cname] = path;
-				class_to_extends[cname] = extract_extends(source);
-			}
-		}
+		scan_and_register_classes(scripts, class_to_path, class_to_extends);
 	}
 
-	// 3. Resolve native bases (needs LinterDB loaded for engine class lookup).
+	// 3. Fully parse each class_name script and extract members.
 	Dictionary classes_dict;
+
 	for (const KeyValue<String, String> &kv : class_to_path) {
+		const String &cname = kv.key;
+		const String &path = kv.value;
+
+		String source = FileAccess::get_file_as_string(path);
+		if (source.is_empty()) {
+			continue;
+		}
+
+		// Parse and analyze.
+		GDScriptParser parser;
+		GDScriptAnalyzer analyzer(&parser);
+
+		Error parse_err = parser.parse(source, path, false);
+		if (parse_err != OK) {
+			// Still include the class with basic info even if parsing fails.
+			print_line(vformat("  WARNING: Parse errors in %s, exporting basic info only.", path));
+		} else {
+			analyzer.analyze();
+		}
+
+		const GDScriptParser::ClassNode *cls_node = parser.get_tree();
+		if (!cls_node) {
+			continue;
+		}
+
 		Dictionary cls;
-		cls["path"] = kv.value;
-		String extends_name = class_to_extends.has(kv.key) ? class_to_extends[kv.key] : "RefCounted";
-		cls["extends"] = extends_name;
-		cls["native_base"] = String(resolve_native_base(extends_name, class_to_extends));
-		classes_dict[kv.key] = cls;
+
+		// Resolve parent to native base.
+		String extends_name = class_to_extends.has(cname) ? class_to_extends[cname] : "RefCounted";
+		StringName native_base = resolve_native_base(extends_name, class_to_extends);
+		cls["parent"] = extends_name;
+		cls["is_abstract"] = false;
+
+		// Methods.
+		{
+			Array methods_arr;
+			for (int i = 0; i < cls_node->members.size(); i++) {
+				if (cls_node->members[i].type != GDScriptParser::ClassNode::Member::FUNCTION) {
+					continue;
+				}
+				const GDScriptParser::FunctionNode *fn = cls_node->members[i].function;
+				Dictionary md = _method_info_to_dict(fn->info);
+				md["is_vararg"] = fn->is_vararg();
+				md["is_static"] = fn->is_static;
+				md["instance_class"] = cname;
+				methods_arr.push_back(md);
+			}
+			cls["methods"] = methods_arr;
+		}
+
+		// Properties (class variables).
+		{
+			Array props_arr;
+			for (int i = 0; i < cls_node->members.size(); i++) {
+				if (cls_node->members[i].type != GDScriptParser::ClassNode::Member::VARIABLE) {
+					continue;
+				}
+				const GDScriptParser::VariableNode *var = cls_node->members[i].variable;
+
+				PropertyInfo pi;
+				pi.name = var->identifier->name;
+
+				// Get type from datatype if resolved.
+				GDScriptParser::DataType dt = var->get_datatype();
+				if (dt.is_set()) {
+					pi.type = dt.builtin_type;
+					if (dt.kind == GDScriptParser::DataType::CLASS || dt.kind == GDScriptParser::DataType::NATIVE) {
+						pi.type = Variant::OBJECT;
+						pi.class_name = dt.native_type;
+					}
+				}
+
+				// Use export info if available.
+				if (var->exported) {
+					pi = var->export_info;
+					if (pi.name.is_empty()) {
+						pi.name = var->identifier->name;
+					}
+				}
+
+				Dictionary pd = _property_info_to_dict(pi);
+
+				// Getter/setter names.
+				if (var->property == GDScriptParser::VariableNode::PROP_SETGET) {
+					if (var->setter_pointer) {
+						pd["setter"] = String(var->setter_pointer->name);
+					}
+					if (var->getter_pointer) {
+						pd["getter"] = String(var->getter_pointer->name);
+					}
+				}
+				props_arr.push_back(pd);
+			}
+			cls["properties"] = props_arr;
+		}
+
+		// Signals.
+		{
+			Array signals_arr;
+			for (int i = 0; i < cls_node->members.size(); i++) {
+				if (cls_node->members[i].type != GDScriptParser::ClassNode::Member::SIGNAL) {
+					continue;
+				}
+				const GDScriptParser::SignalNode *sig = cls_node->members[i].signal;
+				signals_arr.push_back(_method_info_to_dict(sig->method_info));
+			}
+			cls["signals"] = signals_arr;
+		}
+
+		// Enums.
+		{
+			Dictionary enums_dict;
+			for (int i = 0; i < cls_node->members.size(); i++) {
+				if (cls_node->members[i].type != GDScriptParser::ClassNode::Member::ENUM) {
+					continue;
+				}
+				const GDScriptParser::EnumNode *en = cls_node->members[i].m_enum;
+				Dictionary enum_values;
+				for (int j = 0; j < en->values.size(); j++) {
+					enum_values[String(en->values[j].identifier->name)] = en->values[j].value;
+				}
+				enums_dict[String(en->identifier->name)] = enum_values;
+			}
+			if (!enums_dict.is_empty()) {
+				cls["enums"] = enums_dict;
+			}
+		}
+
+		// Constants.
+		{
+			Dictionary consts;
+			for (int i = 0; i < cls_node->members.size(); i++) {
+				if (cls_node->members[i].type == GDScriptParser::ClassNode::Member::ENUM_VALUE) {
+					// Unnamed enum values as constants.
+					const GDScriptParser::EnumNode::Value &ev = cls_node->members[i].enum_value;
+					consts[String(ev.identifier->name)] = ev.value;
+				} else if (cls_node->members[i].type == GDScriptParser::ClassNode::Member::CONSTANT) {
+					const GDScriptParser::ConstantNode *cn = cls_node->members[i].constant;
+					// Try to get the resolved value.
+					if (cn->initializer && cn->initializer->is_constant) {
+						Variant val = cn->initializer->reduced_value;
+						if (val.get_type() == Variant::INT) {
+							consts[String(cn->identifier->name)] = (int64_t)val;
+						}
+					}
+				}
+			}
+			if (!consts.is_empty()) {
+				cls["constants"] = consts;
+			}
+		}
+
+		classes_dict[cname] = cls;
 	}
 
 	// 4. Parse autoloads.
 	String project_godot = p_project_root.path_join("project.godot");
 	Vector<AutoloadEntry> autoloads = parse_autoloads(project_godot);
 
-	Array autoloads_arr;
+	Array singletons_arr;
 	for (const AutoloadEntry &entry : autoloads) {
-		Dictionary al;
-		al["name"] = entry.name;
-		al["path"] = entry.path;
-		al["is_singleton"] = entry.is_singleton;
-		autoloads_arr.push_back(al);
+		if (entry.is_singleton) {
+			singletons_arr.push_back(entry.name);
+		}
 	}
 
-	// 5. Build root dict.
+	// 5. Build root dict (linterdb-compatible format).
 	Dictionary root;
 	root["format_version"] = 1;
-	root["project_root"] = p_project_root;
 	root["classes"] = classes_dict;
-	root["autoloads"] = autoloads_arr;
+	if (!singletons_arr.is_empty()) {
+		root["singletons"] = singletons_arr;
+	}
 
 	// 6. Write JSON.
 	String json_text = JSON::stringify(root, "\t");
@@ -365,7 +545,7 @@ Error dump_project_classdb(const String &p_project_root, const String &p_output_
 // Project classdb import (--project-db)
 // ---------------------------------------------------------------------------
 
-int load_project_db(const String &p_json_path, const String &p_project_root_override) {
+int load_project_db(const String &p_json_path) {
 	String json_text = FileAccess::get_file_as_string(p_json_path);
 	if (json_text.is_empty()) {
 		return -1;
@@ -382,57 +562,20 @@ int load_project_db(const String &p_json_path, const String &p_project_root_over
 		return -1;
 	}
 
-	// Determine project root for path resolution.
-	String original_root = root.get("project_root", "");
-	String effective_root = p_project_root_override.is_empty() ? original_root : p_project_root_override;
-
-	// Set resource path so res:// resolves correctly.
-	if (!effective_root.is_empty()) {
-		ProjectSettings::get_singleton()->set_resource_path(effective_root);
+	// Merge into LinterDB (classes + singletons).
+	LinterDB *db = LinterDB::get_singleton();
+	if (!db) {
+		return -1;
 	}
 
-	// Register classes.
+	err = db->load_additional_classes(root);
+	if (err != OK) {
+		return -1;
+	}
+
+	// Count loaded classes.
 	Dictionary classes_dict = root["classes"];
-	HashMap<String, String> class_to_path;
-	HashMap<String, String> class_to_extends;
-
-	LocalVector<Variant> keys = classes_dict.get_key_list();
-	for (const Variant &key : keys) {
-		String class_name = key;
-		Dictionary cls = classes_dict[key];
-
-		String path = cls.get("path", "");
-		String extends_name = cls.get("extends", "RefCounted");
-		String native_base = cls.get("native_base", "RefCounted");
-
-		// Remap path if project root changed.
-		if (!p_project_root_override.is_empty() && !original_root.is_empty() && !path.is_empty()) {
-			if (path.begins_with(original_root)) {
-				path = effective_root.path_join(path.substr(original_root.length()));
-			}
-		}
-
-		class_to_path[class_name] = path;
-		class_to_extends[class_name] = extends_name;
-
-		ScriptServerStub::register_global_class(StringName(class_name), path, StringName(native_base));
-	}
-
-	// Register autoloads.
-	if (root.has("autoloads")) {
-		Array autoloads_arr = root["autoloads"];
-		LinterDB *db = LinterDB::get_singleton();
-		for (int i = 0; i < autoloads_arr.size(); i++) {
-			Dictionary al = autoloads_arr[i];
-			String name = al.get("name", "");
-			bool is_singleton = al.get("is_singleton", false);
-			if (is_singleton && db && !name.is_empty()) {
-				db->add_singleton(StringName(name));
-			}
-		}
-	}
-
-	return class_to_path.size();
+	return classes_dict.size();
 }
 
 } // namespace workspace
